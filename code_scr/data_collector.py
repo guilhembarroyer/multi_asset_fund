@@ -112,7 +112,7 @@ def get_risk_profile():
 
 def get_email(name):
     """Demande un email valide contenant le nom du client."""
-    while (email := input("📌 Entrez l'email : ")).lower().replace(" ", ".") not in name.lower().replace(" ", "."):
+    while (email := input("📌 Entrez l'email : ")): #.lower().replace(" ", ".") not in name.lower().replace(" ", "."):
         print(f"❌ L'email doit contenir le nom du client ({name}).")
     return email
 
@@ -137,7 +137,7 @@ def get_registration_date():
         try:
             date = datetime.strptime(date_str, "%Y-%m-%d")
             if date >= datetime(2023, 1, 1):
-                print("❌ La date doit être avant le 01-01-2023.")
+                print("❌ La date doit être avant le 2023-01-01.")
             else:
                 return date_str  # Retourne la date sous forme de chaîne
         except ValueError:
@@ -239,30 +239,42 @@ def create_manager(client, database):
 
 ### PORTFOLIO CREATION/CONFIGURATION
 
-def get_corresponding_assets(sector, size):
+def get_corresponding_assets(sector):
     # Initialiser le screener
     s = Screener()
 
     # Récupérer les actions les plus échangées
-    query_results = s.get_screeners(sector, size)
+    query_results = s.get_screeners(sector, 50)
 
     tickers=[stock["symbol"] for stock in query_results[sector]["quotes"]]
 
     return tickers
 
 
-def config_portfolio(manager, client_data, database):
+def create_portfolio(manager, client_data, database):
     """Configure le portefeuille du manager en fonction de la stratégie."""
     
-    size=random.randint(10, 50)
+    size=random.randint(10, 30)
     portfolio = {
-        "manager_id": manager["id"],
+        "manager_id": client_data['manager_id'],
         "client_id": get_next_id("Clients", database),
         "strategy": client_data['risk_profile'],
         "investment_sector": manager["investment_sector"],
         "value": client_data['investment_amount'],
         "size": size,
-        "assets": get_corresponding_assets(manager["investment_sector"], size),
+        "assets": get_corresponding_assets(manager["investment_sector"]),
     }
     
     return portfolio
+
+
+
+###ASSETS DOWNLOADING
+
+def download_asset(ticker):
+    returns=yahoofi.returns(ticker)
+    name=yahoofi.name(ticker)
+    asset_dat= {
+
+    }
+    return asset_data

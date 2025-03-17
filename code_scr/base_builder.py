@@ -128,9 +128,9 @@ class AssetManager:
 
         # 🔹 Insérer le manager
         cursor.execute("""
-            INSERT INTO Managers (name, age, country, email, seniority) 
-            VALUES (?, ?, ?, ?, ?)
-        """, (self.name, self.age, self.country, self.email, self.seniority))
+            INSERT INTO Managers (name, age, country, email, seniority, investment_sector) 
+            VALUES (?, ?, ?, ?, ?,?)
+        """, (self.name, self.age, self.country, self.email, self.seniority, self.investment_sector))
 
         manager_id = cursor.lastrowid  # ✅ Récupérer l'ID
 
@@ -168,11 +168,11 @@ class Portfolio:
         
 
 
-    def check_assets(self, db):
+    #def check_assets(self, db):
         #vérifier l'existence du produit dans la db, si n'existe pas (on le récupère sur Yahoo Finance et l'intègre dans la db (utilisation de la classe Product avec utilisation d'une méthode récup data))
-        cursor = db.cursor()
+     #   cursor = db.cursor()
 
-        for asset in self.assets:
+      #  for asset in self.assets:
             #... 
             #on récupère une fonction du module data_collector pour récupérer les données du produit
             # on modifie bien la liste assets en gardant uniquement les tickers qu'on a pu récupérer dans la db
@@ -213,11 +213,12 @@ class Portfolio:
 
 class Product:
     """Représente un produit financier."""
-    def __init__(self, id, ticker, category, stock_exchange):
+    def __init__(self, id, ticker, category, stock_exchange, returns):
         self.id = id
         self.ticker = ticker
         self.category = category
         self.stock_exchange = stock_exchange
+        self.returns=returns
 
     def save(self, db):
         """Ajoute le produit dans la base de données."""
@@ -225,21 +226,9 @@ class Product:
         INSERT INTO Products ( ticker, category, stock_exchange) 
         VALUES (?, ?, ?)""", ( self.ticker, self.category, self.stock_exchange))
 
+        self.add-product-col
 
-
-
-
-
-
-class Returns:
-    """Représente un produit financier."""
-    def __init__(self, product_id, ticker, category, stock_exchange):
-        self.product_id = product_id
-        self.ticker = ticker
-        self.category = category
-        self.stock_exchange = stock_exchange
-        
-    def add_product_column(self, ticker):
+    def add_product_column(self):
         """Ajoute une colonne pour un nouveau produit (ticker) si elle n'existe pas encore."""
         self.cursor.execute(f"PRAGMA table_info(Returns)")
         columns = [col[1] for col in self.cursor.fetchall()]
