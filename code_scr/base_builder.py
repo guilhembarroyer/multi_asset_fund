@@ -3,6 +3,7 @@ import sqlite3
 
 ### Fonctions utilitaires ###
 
+
 def get_next_id(table, db):
     """Récupère l'ID maximal de la table et retourne l'ID suivant."""
     cursor = db.cursor()
@@ -165,6 +166,21 @@ class Portfolio:
         self.value = value
         self.assets = assets  # Liste des produits
         
+
+
+    def check_assets(self, db):
+        #vérifier l'existence du produit dans la db, si n'existe pas (on le récupère sur Yahoo Finance et l'intègre dans la db (utilisation de la classe Product avec utilisation d'une méthode récup data))
+        cursor = db.cursor()
+
+        for asset in self.assets:
+            #... 
+            #on récupère une fonction du module data_collector pour récupérer les données du produit
+            # on modifie bien la liste assets en gardant uniquement les tickers qu'on a pu récupérer dans la db
+            #on décrit la perte de tickers potentielle
+            #on renvoie potentiellement l'insuffisance de tickers pour créer le portefeuille (intégrer une quantité minimale de tickers pour créer un portefeuille)
+
+
+
     def save(self, db):
         """Ajoute le portefeuille dans la base de données et gère les relations."""
         cursor = db.cursor()
@@ -180,13 +196,13 @@ class Portfolio:
 
         # 🔹 Associer les produits
         for asset in self.assets:
-            #vérifier si le produit existe déjà dans Products
+            
             cursor.execute("SELECT id FROM Products WHERE ticker = ?", (asset))
             #créer une colonne pour chaque product, on associe des poids pour chaque portefeuille
             cursor.execute("""
                 INSERT INTO Portfolio_Products (id, product_id)
                 VALUES (?, ?)
-            """, (portfolio_id, product_id))
+            """, (portfolio_id, asset))
 
         db.commit()
         return portfolio_id 
@@ -195,14 +211,10 @@ class Portfolio:
 
 
 
-
-
-
-
 class Product:
     """Représente un produit financier."""
-    def __init__(self, product_id, ticker, category, stock_exchange):
-        self.product_id = product_id
+    def __init__(self, id, ticker, category, stock_exchange):
+        self.id = id
         self.ticker = ticker
         self.category = category
         self.stock_exchange = stock_exchange
