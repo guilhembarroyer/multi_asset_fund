@@ -3,14 +3,27 @@ fake = Faker()
 
 from datetime import datetime, timedelta
 import random
+import yfinance as yf
+import pandas as pd
+import sqlite3
+import time
 
 import pycountry
 from geopy.geocoders import Nominatim
-geolocator = Nominatim(user_agent="geo_validator")
+geolocator = Nominatim(user_agent="my_fund_manager")
 
-from base_builder import get_eligible_managers, get_next_id
+from base_builder import (
+    BaseModel, Client, AssetManager, Portfolio, Product,
+    get_eligible_managers, get_next_id
+)
 
 from yahooquery import Screener
+
+from typing import Dict, List, Optional, Tuple
+
+from pandas_datareader import data as pdr
+
+from alpha_vantage.timeseries import TimeSeries
 
 
 
@@ -217,12 +230,10 @@ def manager_affiliation(client, database):
 
 def create_manager(client, database):
     """Assigner un manager compatible ou proposer la création d'un nouveau manager."""
-
     client_country = client["country"]
     client_risk_profile = client["risk_profile"]
     client_seniority = get_client_seniority(client["investment_amount"])
-    name=fake.name()
-
+    name = fake.name()
 
     return {
         "name": name,
@@ -231,9 +242,7 @@ def create_manager(client, database):
         "email": generate_email(name),
         "seniority": client_seniority,
         "investment_sector": fake.random_element(['ms_basic_materials','ms_communication_services','ms_consumer_cyclical','ms_consumer_defensive','ms_energy','ms_financial_services','ms_healthcare','ms_industrials','ms_real_estate','ms_technology','ms_utilities']),
-        "strategies": [client_risk_profile] + [random.choice([profile for profile in ["Low Risk", "Medium Risk", "High Risk"] if profile != client_risk_profile])],
-        "clients_id": [get_next_id("Clients", database)],
-        "portfolios_id": [1] #[get_next_id("Portfolios", database)]
+        "strategies": [client_risk_profile] + [random.choice([profile for profile in ["Low Risk", "Medium Risk", "High Risk"] if profile != client_risk_profile])]
     }
 
 
@@ -244,7 +253,7 @@ def get_corresponding_assets(sector):
     s = Screener()
 
     # Récupérer les actions les plus échangées
-    query_results = s.get_screeners(sector, 50)
+    query_results = s.get_screeners(sector, 10)
 
     tickers=[stock["symbol"] for stock in query_results[sector]["quotes"]]
 
@@ -254,7 +263,18 @@ def get_corresponding_assets(sector):
 def create_portfolio(manager, client_data, database):
     """Configure le portefeuille du manager en fonction de la stratégie."""
     
-    size=random.randint(10, 30)
+    size = 10
+    tickers = get_corresponding_assets(manager["investment_sector"])
+    
+    # Vérifier et télécharger les données des actifs
+    missing_tickers = check_and_download_assets(tickers, database)
+    
+    if missing_tickers:
+        print(f"⚠️ {len(missing_tickers)} actifs n'ont pas pu être téléchargés.")
+        if len(tickers) - len(missing_tickers) < 1:  # Minimum 5 actifs requis
+            print("❌ Pas assez d'actifs disponibles pour créer le portefeuille.")
+            return None
+    
     portfolio = {
         "manager_id": client_data['manager_id'],
         "client_id": get_next_id("Clients", database),
@@ -262,7 +282,7 @@ def create_portfolio(manager, client_data, database):
         "investment_sector": manager["investment_sector"],
         "value": client_data['investment_amount'],
         "size": size,
-        "assets": get_corresponding_assets(manager["investment_sector"]),
+        "assets": tickers,
     }
     
     return portfolio
@@ -271,10 +291,328 @@ def create_portfolio(manager, client_data, database):
 
 ###ASSETS DOWNLOADING
 
-def download_asset(ticker):
-    returns=yahoofi.returns(ticker)
-    name=yahoofi.name(ticker)
-    asset_dat= {
+def download_asset(ticker: str) -> Optional[Product]:
+    """
+    Télécharge les données d'un actif depuis Yahoo Finance.
+    
+    Args:
+        ticker: Symbole de l'actif à télécharger
+        
+    Returns:
+        Optional[Product]: L'actif téléchargé ou None en cas d'erreur
+    """
+    try:
+        # Ajout d'un délai aléatoire entre 1 et 3 secondes pour éviter les limites de requêtes
+        time.sleep(random.uniform(1, 3))
+        
+        # Téléchargement des données avec yfinance
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        
+        # Calcul des rendements quotidiens
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=365)
+        hist = stock.history(start=start_date, end=end_date)
+        
+        if hist.empty:
+            print(f"⚠️ Aucune donnée historique disponible pour {ticker}")
+            return None
+            
+        # Calcul des rendements quotidiens
+        returns = {}
+        for date, row in hist.iterrows():
+            if 'Close' in row:
+                returns[date.strftime('%Y-%m-%d')] = float(row['Close'])
+        
+        # Création de l'objet Product
+        return Product(
+            ticker=ticker,
+            sector=info.get('sector', 'Unknown'),
+            returns=returns
+        )
+        
+    except Exception as e:
+        print(f"❌ Erreur lors du téléchargement des données pour {ticker}: {str(e)}")
+        return None
 
-    }
-    return asset_data
+def check_and_download_assets(tickers: List[str], db: sqlite3.Connection) -> List[str]:
+    """
+    Vérifie les actifs manquants et les télécharge si nécessaire.
+    
+    Args:
+        tickers: Liste des symboles à vérifier
+        db: Connexion à la base de données
+        
+    Returns:
+        List[str]: Liste des symboles qui n'ont pas pu être téléchargés
+    """
+    missing_tickers = []
+    
+    for ticker in tickers:
+        try:
+            if not Product.exists(ticker):
+                print(f"📥 Téléchargement des données pour {ticker}...")
+                product = download_asset(ticker)
+                if product:
+                    product.save(db)
+                else:
+                    missing_tickers.append(ticker)
+        except Exception as e:
+            print(f"❌ Erreur lors de la vérification/téléchargement de {ticker}: {str(e)}")
+            missing_tickers.append(ticker)
+    
+    return missing_tickers
+
+def download_stock_data(tickers: List[str], start_date: str, end_date: str) -> pd.DataFrame:
+    """
+    Télécharge les données boursières pour une liste de tickers.
+    
+    Args:
+        tickers: Liste des symboles boursiers
+        start_date: Date de début au format 'YYYY-MM-DD'
+        end_date: Date de fin au format 'YYYY-MM-DD'
+        
+    Returns:
+        pd.DataFrame: DataFrame contenant les données boursières
+    """
+    try:
+        # Initialisation de l'API Alpha Vantage
+        ts = TimeSeries(key='demo', output_format='pandas')
+        
+        # Téléchargement des données avec un délai entre chaque ticker
+        all_data = []
+        for ticker in tickers:
+            try:
+                # Ajout d'un délai aléatoire entre 1 et 3 secondes
+                time.sleep(random.uniform(1, 3))
+                
+                # Téléchargement des données pour un seul ticker
+                data, _ = ts.get_daily_adjusted(symbol=ticker, outputsize='full')
+                
+                # Filtrer les données selon la plage de dates
+                data = data[start_date:end_date]
+                
+                if not data.empty:
+                    # Calcul des rendements pour ce ticker
+                    data['Return'] = data['5. adjusted close'].pct_change()
+                    data = data[['Return']].copy()
+                    data['Ticker'] = ticker
+                    data.reset_index(inplace=True)
+                    all_data.append(data)
+                    print(f"✅ Données téléchargées pour {ticker}")
+                else:
+                    print(f"⚠️ Aucune donnée disponible pour {ticker}")
+                    
+            except Exception as e:
+                print(f"❌ Erreur lors du téléchargement de {ticker}: {str(e)}")
+                continue
+        
+        if not all_data:
+            print("❌ Aucune donnée n'a pu être téléchargée")
+            return pd.DataFrame()
+        
+        # Combinaison de toutes les données
+        combined_data = pd.concat(all_data, ignore_index=True)
+        
+        # Conversion des dates en format string
+        combined_data['Date'] = combined_data['date'].dt.strftime('%Y-%m-%d')
+        combined_data = combined_data[['Date', 'Return', 'Ticker']]
+        
+        return combined_data
+        
+    except Exception as e:
+        print(f"❌ Erreur lors du téléchargement des données : {str(e)}")
+        return pd.DataFrame()
+
+def save_stock_data(data: pd.DataFrame, db: sqlite3.Connection) -> None:
+    """
+    Sauvegarde les données boursières dans la base de données.
+    
+    Args:
+        data: DataFrame contenant les données boursières
+        db: Connexion à la base de données
+    """
+    try:
+        cursor = db.cursor()
+        
+        # Parcours des données
+        for _, row in data.iterrows():
+            date = row['Date']
+            ticker = row['Ticker']
+            return_value = row['Return']
+            
+            # Vérification de l'existence du produit
+            if not Product.exists(ticker):
+                # Création du produit avec un secteur par défaut
+                product = Product(ticker=ticker, sector="Unknown")
+                product.save(db)
+            
+            # Sauvegarde du rendement
+            cursor.execute("""
+                INSERT OR REPLACE INTO Returns (date, ticker, return_value)
+                VALUES (?, ?, ?)
+            """, (date, ticker, return_value))
+        
+        db.commit()
+        print("✅ Données boursières sauvegardées avec succès.")
+        
+    except Exception as e:
+        print(f"❌ Erreur lors de la sauvegarde des données : {str(e)}")
+        db.rollback()
+
+def create_sample_data() -> None:
+    """Crée des données d'exemple dans la base de données."""
+    try:
+        # Création de la base de données
+        BaseModel.create_database()
+        
+        # Connexion à la base de données
+        with BaseModel.get_db_connection() as db:
+            # Création des gestionnaires
+            managers = [
+                AssetManager(
+                    name="John Smith",
+                    age=45,
+                    country="USA",
+                    email="john.smith.manager@example.com",
+                    seniority="Senior",
+                    investment_sector="Technology",
+                    strategies=["Growth", "Value"]
+                ),
+                AssetManager(
+                    name="Marie Dupont",
+                    age=38,
+                    country="France",
+                    email="marie.dupont.manager@example.com",
+                    seniority="Mid",
+                    investment_sector="Healthcare",
+                    strategies=["Value", "Income"]
+                ),
+                AssetManager(
+                    name="David Chen",
+                    age=42,
+                    country="China",
+                    email="david.chen.manager@example.com",
+                    seniority="Senior",
+                    investment_sector="Technology",
+                    strategies=["Growth", "Momentum"]
+                )
+            ]
+            
+            manager_ids = []
+            for manager in managers:
+                manager_id = manager.save(db)
+                manager_ids.append(manager_id)
+            
+            # Création des clients
+            clients = [
+                Client(
+                    name="Alice Johnson",
+                    age=35,
+                    country="USA",
+                    email="alice.j.client@example.com",
+                    risk_profile="Moderate",
+                    investment_amount=100000.0,
+                    manager_id=manager_ids[0]
+                ),
+                Client(
+                    name="Pierre Martin",
+                    age=45,
+                    country="France",
+                    email="pierre.m.client@example.com",
+                    risk_profile="Conservative",
+                    investment_amount=150000.0,
+                    manager_id=manager_ids[1]
+                ),
+                Client(
+                    name="Li Wei",
+                    age=40,
+                    country="China",
+                    email="li.w.client@example.com",
+                    risk_profile="Aggressive",
+                    investment_amount=200000.0,
+                    manager_id=manager_ids[2]
+                )
+            ]
+            
+            client_ids = []
+            for client in clients:
+                client_id = client.save(db)
+                client_ids.append(client_id)
+            
+            # Création des portefeuilles
+            portfolios = [
+                Portfolio(
+                    manager_id=manager_ids[0],
+                    client_id=client_ids[0],
+                    strategy="Growth",
+                    investment_sector="Technology",
+                    size=5,
+                    value=100000.0,
+                    assets=["AAPL", "MSFT"]
+                ),
+                Portfolio(
+                    manager_id=manager_ids[1],
+                    client_id=client_ids[1],
+                    strategy="Value",
+                    investment_sector="Healthcare",
+                    size=4,
+                    value=150000.0,
+                    assets=["JNJ", "PFE"]
+                ),
+                Portfolio(
+                    manager_id=manager_ids[2],
+                    client_id=client_ids[2],
+                    strategy="Growth",
+                    investment_sector="Technology",
+                    size=6,
+                    value=200000.0,
+                    assets=["BABA", "JD"]
+                )
+            ]
+            
+            portfolio_ids = []
+            for portfolio in portfolios:
+                portfolio_id = portfolio.save(db)
+                portfolio_ids.append(portfolio_id)
+            
+            # Mise à jour des IDs de portefeuille pour les clients
+            for client_id, portfolio_id in zip(client_ids, portfolio_ids):
+                cursor = db.cursor()
+                cursor.execute("""
+                    UPDATE Clients
+                    SET portfolio_id = ?
+                    WHERE id = ?
+                """, (portfolio_id, client_id))
+            
+            db.commit()
+            print("✅ Données d'exemple créées avec succès.")
+            
+    except Exception as e:
+        print(f"❌ Une erreur inattendue s'est produite : {str(e)}")
+        if 'db' in locals():
+            db.rollback()
+
+def main():
+    """Fonction principale du programme."""
+    try:
+        # Création des données d'exemple
+        create_sample_data()
+        
+        # Téléchargement des données boursières
+        tickers = ["AAPL", "MSFT", "JNJ", "PFE""BABA", "JD"]
+        start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+        end_date = datetime.now().strftime("%Y-%m-%d")
+        
+        data = download_stock_data(tickers, start_date, end_date)
+        
+        if not data.empty:
+            # Sauvegarde des données
+            with BaseModel.get_db_connection() as db:
+                save_stock_data(data, db)
+        
+    except Exception as e:
+        print(f"❌ Une erreur inattendue s'est produite : {str(e)}")
+
+if __name__ == "__main__":
+    main()

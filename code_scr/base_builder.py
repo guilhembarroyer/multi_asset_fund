@@ -1,93 +1,45 @@
+import os
 import sqlite3
+from datetime import datetime
+from typing import Optional, List, Dict, Any
 
 
-### Fonctions utilitaires ###
-
-
-def get_next_id(table, db):
-    """Récupère l'ID maximal de la table et retourne l'ID suivant."""
-    cursor = db.cursor()
-    cursor.execute(f"SELECT MAX(id) FROM {table}")  # Remplace 'manager_id' par le nom de la colonne de l'ID
-    max_id = cursor.fetchone()[0]
+def get_db_path() -> str:
+    """
+    Retourne le chemin de la base de données dans le dossier parent.
     
-    if max_id is None:
-        return 1  # Si la table est vide, le premier ID sera 1
-    return max_id + 1
+    Returns:
+        str: Chemin absolu vers la base de données
+    """
+    # Obtenir le chemin du dossier parent (un niveau au-dessus du dossier code_scr)
+    parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(parent_dir, "fund_database.db")
 
 
-
-### Classes ###
-
-## Client
-
-class Client:
-    """Représente un client du fond."""
-    def __init__(self, 
-                 name, 
-                 age, 
-                 country, 
-                 email, 
-                 risk_profile, 
-                 registration_date, 
-                 investment_amount, 
-                 manager_id, 
-                 portfolio_id):
+def get_eligible_managers(db: sqlite3.Connection, client_country: str, client_seniority: str, client_strategie: str) -> List[Dict[str, Any]]:
+    """
+    Récupère les managers compatibles depuis la base de données selon les critères.
+    
+    Args:
+        db: Connexion à la base de données
+        client_country: Pays du client
+        client_seniority: Niveau de séniorité du client
+        client_strategie: Stratégie d'investissement du client
         
-        self.name = name
-        self.age = age
-        self.country = country
-        self.email = email
-        self.risk_profile = risk_profile
-        self.registration_date = registration_date
-        self.investment_amount = investment_amount
-        self.manager_id = manager_id
-        self.portfolio_id = portfolio_id
-
-    def client_exists(self, db):
-        """Vérifie si un client existe déjà avec cet email et ce nom."""
-        cursor = db.cursor()
-        cursor.execute("SELECT COUNT(*) FROM Clients WHERE email = ? AND name = ?", (self.email, self.name))
-        result = cursor.fetchone()
-        return result[0] > 0
-
-    def save(self, db):
-        """Ajoute le client dans la base de données."""
-        if self.client_exists(db):
-            print(f"❌ Un client avec cet email et ce nom existe déjà.")
-        else:
-            cursor = db.cursor()
-            cursor.execute("""
-                INSERT INTO Clients (name, age, country, email, risk_profile, registration_date, investment_amount, manager_id, portfolio_id) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", 
-                (self.name, self.age, self.country, self.email, self.risk_profile, self.registration_date, self.investment_amount, self.manager_id, self.portfolio_id))
-
-            db.commit()
-            print(f"✅ Client {self.name} ajouté avec succès.")
-
-
-
-
-
-## Manager
-
-def get_eligible_managers(db, client_country, client_seniority, client_strategie):
-    """Récupère les managers compatibles depuis la base de données selon les critères."""
-    
-    # Requête SQL pour filtrer les managers selon le pays, la séniorité et la stratégie
+    Returns:
+        List[Dict[str, Any]]: Liste des managers éligibles
+    """
     cursor = db.cursor()
     cursor.execute("""
-        SELECT * 
-        FROM Managers
-        INNER JOIN Manager_Strategies ON Managers.id = Manager_Strategies.manager_id           
-        WHERE Managers.country = ? AND Managers.seniority = ? AND Manager_Strategies.strategy LIKE ?
+        SELECT m.id, m.name, m.age, m.country, m.email, m.seniority, m.investment_sector
+        FROM Managers m
+        INNER JOIN Manager_Strategies ms ON m.id = ms.manager_id
+        WHERE m.country = ? AND m.seniority = ? AND ms.strategy LIKE ?
     """, (client_country, client_seniority, f"%{client_strategie}%"))
     
-    # Récupération des résultats
     rows = cursor.fetchall()
-    
     eligible_managers = []
     
-    # Parcours des résultats et conversion en dictionnaire
     for row in rows:
         manager = {
             'id': row[0],
@@ -96,196 +48,473 @@ def get_eligible_managers(db, client_country, client_seniority, client_strategie
             'country': row[3],
             'email': row[4],
             'seniority': row[5],
-            'investment_sector': row[6],
-            #'strategies': row[7],
-            #'clients_id': row[8],  
-            #'portfolios_id': row[9]
+            'investment_sector': row[6]
         }
         eligible_managers.append(manager)
     
     return eligible_managers
 
 
+class BaseModel:
+    """Classe de base pour tous les modèles de données."""
+    
+    @classmethod
+    def create_database(cls) -> None:
+        """
+        Crée la base de données et ses tables.
+        
+        Cette méthode initialise la structure de la base de données avec toutes les tables nécessaires
+        pour le système de gestion de fonds d'investissement.
+        """
+        db_file = get_db_path()
+        
+        try:
+            # Connexion à la base de données SQLite
+            conn = sqlite3.connect(db_file)
+            cursor = conn.cursor()
+
+            # Création des tables
+            cursor.executescript("""
+                CREATE TABLE IF NOT EXISTS Clients (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    age INTEGER NOT NULL,
+                    country TEXT NOT NULL,
+                    email TEXT NOT NULL UNIQUE,
+                    risk_profile TEXT NOT NULL,
+                    registration_date TEXT NOT NULL,
+                    investment_amount REAL NOT NULL,
+                    manager_id INTEGER NOT NULL,
+                    portfolio_id INTEGER
+                );
+
+                CREATE TABLE IF NOT EXISTS Managers (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    age INTEGER NOT NULL,
+                    country TEXT NOT NULL,
+                    email TEXT UNIQUE NOT NULL,
+                    seniority TEXT NOT NULL,
+                    investment_sector TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS Manager_Strategies (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    manager_id INTEGER NOT NULL,
+                    strategy TEXT NOT NULL,
+                    FOREIGN KEY (manager_id) REFERENCES Managers(id),
+                    UNIQUE (manager_id, strategy)
+                );
+
+                CREATE TABLE IF NOT EXISTS Manager_Clients (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    manager_id INTEGER NOT NULL,
+                    client_id INTEGER NOT NULL,
+                    FOREIGN KEY (manager_id) REFERENCES Managers(id),
+                    FOREIGN KEY (client_id) REFERENCES Clients(id),
+                    UNIQUE (manager_id, client_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS Manager_Portfolios (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    manager_id INTEGER NOT NULL,
+                    portfolio_id INTEGER NOT NULL,
+                    FOREIGN KEY (manager_id) REFERENCES Managers(id),
+                    FOREIGN KEY (portfolio_id) REFERENCES Portfolios(id),
+                    UNIQUE (manager_id, portfolio_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS Portfolios (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    manager_id INTEGER NOT NULL,
+                    client_id INTEGER NOT NULL,
+                    strategy TEXT NOT NULL,
+                    investment_sector TEXT NOT NULL,
+                    size INTEGER NOT NULL,
+                    value REAL NOT NULL,
+                    FOREIGN KEY (client_id) REFERENCES Clients(id),
+                    FOREIGN KEY (manager_id) REFERENCES Managers(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS Portfolio_Products (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    portfolio_id INTEGER NOT NULL,
+                    product_id INTEGER NOT NULL,
+                    FOREIGN KEY (portfolio_id) REFERENCES Portfolios(id),
+                    FOREIGN KEY (product_id) REFERENCES Products(id),
+                    UNIQUE (portfolio_id, product_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS Products (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ticker TEXT NOT NULL UNIQUE,
+                    sector TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS Returns (
+                    date TEXT PRIMARY KEY,
+                    ticker TEXT NOT NULL,
+                    return_value REAL NOT NULL,
+                    FOREIGN KEY (ticker) REFERENCES Products(ticker)
+                );
+            """)
+            print("✅ Toutes les tables ont été créées avec succès.")
+            conn.commit()
+            
+        except sqlite3.Error as e:
+            print(f"❌ Erreur SQLite : {e}")
+        finally:
+            if conn:
+                conn.close()
+
+    @classmethod
+    def get_db_connection(cls) -> sqlite3.Connection:
+        """
+        Crée et retourne une connexion à la base de données.
+        
+        Returns:
+            sqlite3.Connection: Connexion à la base de données
+        """
+        return sqlite3.connect(get_db_path())
 
 
-class AssetManager:
-    """Représente un asset manager du fond."""
-    def __init__(self, name, age, country, email, seniority, investment_sector, strategies, clients_id, portfolios_id):
+class Client(BaseModel):
+    """Classe représentant un client du fonds d'investissement."""
+    
+    def __init__(self, name: str, age: int, country: str, email: str, 
+                 risk_profile: str, investment_amount: float, 
+                 manager_id: Optional[int] = None, portfolio_id: Optional[int] = None):
+        self.name = name
+        self.age = age
+        self.country = country
+        self.email = email
+        self.risk_profile = risk_profile
+        self.registration_date = datetime.now().strftime("%Y-%m-%d")
+        self.investment_amount = investment_amount
+        self.manager_id = manager_id
+        self.portfolio_id = portfolio_id
+
+    def save(self, db: sqlite3.Connection) -> int:
+        """
+        Sauvegarde le client dans la base de données.
+        
+        Args:
+            db: Connexion à la base de données
+            
+        Returns:
+            int: ID du client créé
+        """
+        cursor = db.cursor()
+        cursor.execute("""
+            INSERT INTO Clients (name, age, country, email, risk_profile, 
+                               registration_date, investment_amount, manager_id, portfolio_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (self.name, self.age, self.country, self.email, self.risk_profile,
+              self.registration_date, self.investment_amount, self.manager_id, self.portfolio_id))
+        
+        client_id = cursor.lastrowid
+        
+        # Création de la relation manager-client
+        if self.manager_id:
+            cursor.execute("""
+                INSERT INTO Manager_Clients (manager_id, client_id)
+                VALUES (?, ?)
+            """, (self.manager_id, client_id))
+        
+        db.commit()
+        return client_id
+
+    @classmethod
+    def get_by_id(cls, client_id: int) -> Optional['Client']:
+        """
+        Récupère un client par son ID.
+        
+        Args:
+            client_id: ID du client à récupérer
+            
+        Returns:
+            Optional[Client]: Le client trouvé ou None si non trouvé
+        """
+        with cls.get_db_connection() as db:
+            cursor = db.cursor()
+            cursor.execute("""
+                SELECT name, age, country, email, risk_profile, registration_date,
+                       investment_amount, manager_id, portfolio_id
+                FROM Clients
+                WHERE id = ?
+            """, (client_id,))
+            
+            row = cursor.fetchone()
+            if row:
+                return cls(*row)
+            return None
+
+
+class AssetManager(BaseModel):
+    """Classe représentant un gestionnaire d'actifs."""
+    
+    def __init__(self, name: str, age: int, country: str, email: str,
+                 seniority: str, investment_sector: str, strategies: Optional[List[str]] = None):
         self.name = name
         self.age = age
         self.country = country
         self.email = email
         self.seniority = seniority
         self.investment_sector = investment_sector
-        self.strategies = strategies  # Liste des stratégies
-        self.clients_id = clients_id  # Liste des clients
-        self.portfolios_id = portfolios_id  # Liste des portefeuilles
+        self.strategies = strategies or []
 
-
-    def save(self, db):
-        """Ajoute l'asset manager dans la base de données et gère les relations."""
+    def save(self, db: sqlite3.Connection) -> int:
+        """
+        Sauvegarde le gestionnaire dans la base de données.
+        
+        Args:
+            db: Connexion à la base de données
+            
+        Returns:
+            int: ID du gestionnaire créé
+        """
         cursor = db.cursor()
-
-        # 🔹 Insérer le manager
         cursor.execute("""
-            INSERT INTO Managers (name, age, country, email, seniority, investment_sector) 
-            VALUES (?, ?, ?, ?, ?,?)
+            INSERT INTO Managers (name, age, country, email, seniority, investment_sector)
+            VALUES (?, ?, ?, ?, ?, ?)
         """, (self.name, self.age, self.country, self.email, self.seniority, self.investment_sector))
-
-        manager_id = cursor.lastrowid  # ✅ Récupérer l'ID
-
-        # 🔹 Associer les stratégies
+        
+        manager_id = cursor.lastrowid
+        
+        # Sauvegarde des stratégies
         for strategy in self.strategies:
-            cursor.execute("INSERT INTO Manager_Strategies (manager_id, strategy) VALUES (?, ?)", (manager_id, strategy))
-
-        # 🔹 Associer les clients
-        for client_id in self.clients_id:
-            cursor.execute("INSERT INTO Manager_Clients (manager_id, client_id) VALUES (?, ?)", (manager_id, client_id))
-
-        #🔹 Associer les portefeuilles
-        for portfolio_id in self.portfolios_id:
-            cursor.execute("INSERT INTO Manager_Portfolios (manager_id, portfolio_id) VALUES (?, ?)", (manager_id, portfolio_id))
-
+            cursor.execute("""
+                INSERT INTO Manager_Strategies (manager_id, strategy)
+                VALUES (?, ?)
+            """, (manager_id, strategy))
+        
         db.commit()
         return manager_id
 
-
-
-
-## Portfolio
-
-class Portfolio:
-    """Représente un portefeuille."""
-    def __init__(self, id, manager_id, client_id, strategy, investment_sector, size, value, assets):
-        self.id = id
-        self.manager_id = manager_id
-        self.client_id=client_id
-        self.strategy = strategy
-        investment_sector = investment_sector
-        size = size
-        self.value = value
-        self.assets = assets  # Liste des produits
+    @classmethod
+    def get_by_id(cls, manager_id: int) -> Optional['AssetManager']:
+        """
+        Récupère un gestionnaire par son ID.
         
-
-
-    #def check_assets(self, db):
-        #vérifier l'existence du produit dans la db, si n'existe pas (on le récupère sur Yahoo Finance et l'intègre dans la db (utilisation de la classe Product avec utilisation d'une méthode récup data))
-     #   cursor = db.cursor()
-
-      #  for asset in self.assets:
-            #... 
-            #on récupère une fonction du module data_collector pour récupérer les données du produit
-            # on modifie bien la liste assets en gardant uniquement les tickers qu'on a pu récupérer dans la db
-            #on décrit la perte de tickers potentielle
-            #on renvoie potentiellement l'insuffisance de tickers pour créer le portefeuille (intégrer une quantité minimale de tickers pour créer un portefeuille)
-
-
-
-    def save(self, db):
-        """Ajoute le portefeuille dans la base de données et gère les relations."""
-        cursor = db.cursor()
-
-        # 🔹 Insérer le portefeuille principal
-        cursor.execute("""
-            INSERT INTO Portfolios (manager_id, client_id, strategy, investment_sector, size, value) 
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, ( self.manager_id, self.client_id, self.strategy, self.investment_sector, self.size, self.value))
-        
-        # ✅ Récupérer l'ID auto-incrémenté
-        portfolio_id = cursor.lastrowid
-
-        # 🔹 Associer les produits
-        for asset in self.assets:
+        Args:
+            manager_id: ID du gestionnaire à récupérer
             
-            cursor.execute("SELECT id FROM Products WHERE ticker = ?", (asset))
-            #créer une colonne pour chaque product, on associe des poids pour chaque portefeuille
+        Returns:
+            Optional[AssetManager]: Le gestionnaire trouvé ou None si non trouvé
+        """
+        with cls.get_db_connection() as db:
+            cursor = db.cursor()
             cursor.execute("""
-                INSERT INTO Portfolio_Products (id, product_id)
+                SELECT m.name, m.age, m.country, m.email, m.seniority, m.investment_sector
+                FROM Managers m
+                WHERE m.id = ?
+            """, (manager_id,))
+            
+            row = cursor.fetchone()
+            if row:
+                # Récupération des stratégies
+                cursor.execute("""
+                    SELECT strategy
+                    FROM Manager_Strategies
+                    WHERE manager_id = ?
+                """, (manager_id,))
+                strategies = [row[0] for row in cursor.fetchall()]
+                
+                return cls(*row, strategies=strategies)
+            return None
+
+
+class Portfolio(BaseModel):
+    """Classe représentant un portefeuille d'investissement."""
+    
+    def __init__(self, manager_id: int, client_id: int, strategy: str,
+                 investment_sector: str, size: int, value: float,
+                 assets: Optional[List[str]] = None):
+        self.manager_id = manager_id
+        self.client_id = client_id
+        self.strategy = strategy
+        self.investment_sector = investment_sector
+        self.size = size
+        self.value = value
+        self.assets = assets or []
+
+    def save(self, db: sqlite3.Connection) -> int:
+        """
+        Sauvegarde le portefeuille dans la base de données.
+        
+        Args:
+            db: Connexion à la base de données
+            
+        Returns:
+            int: ID du portefeuille créé
+        """
+        cursor = db.cursor()
+        cursor.execute("""
+            INSERT INTO Portfolios (manager_id, client_id, strategy, investment_sector, size, value)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (self.manager_id, self.client_id, self.strategy, self.investment_sector,
+              self.size, self.value))
+        
+        portfolio_id = cursor.lastrowid
+        
+        # Création de la relation manager-portfolio
+        cursor.execute("""
+            INSERT INTO Manager_Portfolios (manager_id, portfolio_id)
+            VALUES (?, ?)
+        """, (self.manager_id, portfolio_id))
+        
+        # Association des produits au portefeuille
+        for ticker in self.assets:
+            cursor.execute("""
+                SELECT id FROM Products WHERE ticker = ?
+            """, (ticker,))
+            product_id = cursor.fetchone()[0]
+            
+            cursor.execute("""
+                INSERT INTO Portfolio_Products (portfolio_id, product_id)
                 VALUES (?, ?)
-            """, (portfolio_id, asset))
-
+            """, (portfolio_id, product_id))
+        
         db.commit()
-        return portfolio_id 
+        return portfolio_id
+
+    @classmethod
+    def get_by_id(cls, portfolio_id: int) -> Optional['Portfolio']:
+        """
+        Récupère un portefeuille par son ID.
+        
+        Args:
+            portfolio_id: ID du portefeuille à récupérer
+            
+        Returns:
+            Optional[Portfolio]: Le portefeuille trouvé ou None si non trouvé
+        """
+        with cls.get_db_connection() as db:
+            cursor = db.cursor()
+            cursor.execute("""
+                SELECT p.manager_id, p.client_id, p.strategy, p.investment_sector,
+                       p.size, p.value
+                FROM Portfolios p
+                WHERE p.id = ?
+            """, (portfolio_id,))
+            
+            row = cursor.fetchone()
+            if row:
+                # Récupération des actifs
+                cursor.execute("""
+                    SELECT pr.ticker
+                    FROM Portfolio_Products pp
+                    JOIN Products pr ON pp.product_id = pr.id
+                    WHERE pp.portfolio_id = ?
+                """, (portfolio_id,))
+                assets = [row[0] for row in cursor.fetchall()]
+                
+                return cls(*row, assets=assets)
+            return None
 
 
-
-
-
-class Product:
-    """Représente un produit financier."""
-    def __init__(self, id, ticker, category, stock_exchange, returns):
-        self.id = id
+class Product(BaseModel):
+    """Classe représentant un produit financier."""
+    
+    def __init__(self, ticker: str, sector: str, returns: Optional[Dict[str, float]] = None):
         self.ticker = ticker
-        self.category = category
-        self.stock_exchange = stock_exchange
-        self.returns=returns
+        self.sector = sector
+        self.returns = returns or {}
 
-    def save(self, db):
-        """Ajoute le produit dans la base de données."""
-        db.execute("""
-        INSERT INTO Products ( ticker, category, stock_exchange) 
-        VALUES (?, ?, ?)""", ( self.ticker, self.category, self.stock_exchange))
-
-        self.add-product-col
-
-    def add_product_column(self):
-        """Ajoute une colonne pour un nouveau produit (ticker) si elle n'existe pas encore."""
-        self.cursor.execute(f"PRAGMA table_info(Returns)")
-        columns = [col[1] for col in self.cursor.fetchall()]
-
-        if ticker not in columns:
-            self.cursor.execute(f"ALTER TABLE Returns ADD COLUMN {ticker} REAL")
-            self.conn.commit()
-
-    def insert_return(self, date, returns_dict):
+    def save(self, db: sqlite3.Connection) -> int:
         """
-        Insère ou met à jour les returns pour une date donnée.
-        returns_dict : dict {ticker: return_value}
+        Sauvegarde le produit et ses rendements dans la base de données.
+        
+        Args:
+            db: Connexion à la base de données
+            
+        Returns:
+            int: ID du produit créé
         """
-        # Vérifie que toutes les colonnes existent
-        for ticker in returns_dict.keys():
-            self.add_product_column(ticker)
+        cursor = db.cursor()
+        cursor.execute("""
+            INSERT INTO Products (ticker, sector)
+            VALUES (?, ?)
+        """, (self.ticker, self.sector))
+        
+        product_id = cursor.lastrowid
+        
+        # Sauvegarde des rendements
+        for date, return_value in self.returns.items():
+            cursor.execute("""
+                INSERT INTO Returns (date, ticker, return_value)
+                VALUES (?, ?, ?)
+            """, (date, self.ticker, return_value))
+        
+        db.commit()
+        return product_id
 
-        # Vérifie si la date existe déjà
-        self.cursor.execute("SELECT * FROM Returns WHERE date = ?", (date,))
-        existing = self.cursor.fetchone()
+    @classmethod
+    def exists(cls, ticker: str) -> bool:
+        """
+        Vérifie si un produit existe déjà dans la base de données.
+        
+        Args:
+            ticker: Symbole du produit à vérifier
+            
+        Returns:
+            bool: True si le produit existe, False sinon
+        """
+        with cls.get_db_connection() as db:
+            cursor = db.cursor()
+            cursor.execute("SELECT 1 FROM Products WHERE ticker = ?", (ticker,))
+            return cursor.fetchone() is not None
 
-        if existing:
-            # Mise à jour des valeurs
-            update_query = "UPDATE Returns SET " + ", ".join([f"{ticker} = ?" for ticker in returns_dict.keys()]) + " WHERE date = ?"
-            values = list(returns_dict.values()) + [date]
-            self.cursor.execute(update_query, values)
-        else:
-            # Insertion d'une nouvelle ligne
-            columns = ", ".join(["date"] + list(returns_dict.keys()))
-            placeholders = ", ".join(["?"] * (len(returns_dict) + 1))
-            insert_query = f"INSERT INTO Returns ({columns}) VALUES ({placeholders})"
-            values = [date] + list(returns_dict.values())
-            self.cursor.execute(insert_query, values)
+    @classmethod
+    def get_by_ticker(cls, ticker: str) -> Optional['Product']:
+        """
+        Récupère un produit par son symbole.
+        
+        Args:
+            ticker: Symbole du produit à récupérer
+            
+        Returns:
+            Optional[Product]: Le produit trouvé ou None si non trouvé
+        """
+        with cls.get_db_connection() as db:
+            cursor = db.cursor()
+            cursor.execute("""
+                SELECT p.ticker, p.sector
+                FROM Products p
+                WHERE p.ticker = ?
+            """, (ticker,))
+            
+            row = cursor.fetchone()
+            if row:
+                # Récupération des rendements
+                cursor.execute("""
+                    SELECT date, return_value
+                    FROM Returns
+                    WHERE ticker = ?
+                """, (ticker,))
+                returns = {row[0]: row[1] for row in cursor.fetchall()}
+                
+                return cls(*row, returns=returns)
+            return None
 
-        self.conn.commit()
 
+### Fonctions utilitaires ###
 
-
-
-class Deal:
-    """Représente un deal (transaction) entre actifs dans un portefeuille."""
-
-    def __init__(self, deal_id, portfolio_id, date, asset_sold, quantity_sold, price_sold, asset_bought, quantity_bought, price_bought):
-        self.deal_id = deal_id
-        self.portfolio_id = portfolio_id
-        self.date = date
-        self.asset_sold = asset_sold
-        self.quantity_sold = quantity_sold
-        self.price_sold = price_sold
-        self.asset_bought = asset_bought
-        self.quantity_bought = quantity_bought
-        self.price_bought = price_bought
-
-    def save(self, db):
-        """Enregistre la transaction en base de données."""
-        db.execute("""
-            INSERT INTO Deals (portfolio_id, date, asset_sold, quantity_sold, price_sold, asset_bought, quantity_bought, price_bought)
-            VALUES ( ?, ?, ?, ?, ?, ?, ?, ?)""",
-            ( self.portfolio_id, self.date, self.asset_sold, self.quantity_sold, self.price_sold, 
-             self.asset_bought, self.quantity_bought, self.price_bought))
+def get_next_id(table: str, db: sqlite3.Connection) -> int:
+    """
+    Récupère l'ID maximal de la table et retourne l'ID suivant.
+    
+    Args:
+        table: Nom de la table
+        db: Connexion à la base de données
+        
+    Returns:
+        int: Prochain ID disponible
+    """
+    cursor = db.cursor()
+    cursor.execute(f"SELECT MAX(id) FROM {table}")
+    max_id = cursor.fetchone()[0]
+    
+    if max_id is None:
+        return 1  # Si la table est vide, le premier ID sera 1
+    return max_id + 1
