@@ -21,7 +21,7 @@ from yahooquery import Screener
 
 from typing import Dict, List, Optional, Tuple
 
-from pandas_datareader import data as pdr
+import pandas_datareader as pdr
 
 from alpha_vantage.timeseries import TimeSeries
 
@@ -60,7 +60,7 @@ def generate_valid_registration_date():
 
 
 
-def generate_random_client():
+def generate_random_client(database):
     """Génère un client aléatoire avec des données valides."""
     name = fake.name()
     return {
@@ -71,6 +71,7 @@ def generate_random_client():
         "risk_profile": fake.random_element(elements=("Low Risk", "Medium Risk", "High Risk")),
         "registration_date": generate_valid_registration_date(),
         "investment_amount": fake.random_int(min=1000, max=1000000),
+        "portfolio_id": get_next_id("Portfolios", database)
     }
 
 
@@ -157,7 +158,7 @@ def get_registration_date():
             print("❌ Format invalide ! Utilisez YYYY-MM-DD.")
 
 
-def generate_precise_client():
+def generate_precise_client(database):
     """Demande à l'utilisateur d'entrer les informations d'un client avec validation."""
     # Collecte des informations de base
     name = get_client_name()
@@ -176,7 +177,8 @@ def generate_precise_client():
         "email": email,
         "risk_profile": risk_profile,
         "registration_date": registration_date,
-        "investment_amount": investment_amount
+        "investment_amount": investment_amount,
+        "portfolio_id": get_next_id("Portfolios", database)
     }
 
 
@@ -253,7 +255,7 @@ def get_corresponding_assets(sector):
     s = Screener()
 
     # Récupérer les actions les plus échangées
-    query_results = s.get_screeners(sector, 10)
+    query_results = s.get_screeners(sector, 2)
 
     tickers=[stock["symbol"] for stock in query_results[sector]["quotes"]]
 
@@ -263,28 +265,32 @@ def get_corresponding_assets(sector):
 def create_portfolio(manager, client_data, database):
     """Configure le portefeuille du manager en fonction de la stratégie."""
     
-    size = 10
     tickers = get_corresponding_assets(manager["investment_sector"])
     
     # Vérifier et télécharger les données des actifs
     missing_tickers = check_and_download_assets(tickers, database)
     
+    size = len(tickers) - len(missing_tickers)
     if missing_tickers:
         print(f"⚠️ {len(missing_tickers)} actifs n'ont pas pu être téléchargés.")
-        if len(tickers) - len(missing_tickers) < 1:  # Minimum 5 actifs requis
+        if size < 1:  # Minimum 1 actif requis
             print("❌ Pas assez d'actifs disponibles pour créer le portefeuille.")
             return None
     
+    print("merge")
+    Product.merge_returns_tables()
+    print("merge reussi")
     portfolio = {
         "manager_id": client_data['manager_id'],
-        "client_id": get_next_id("Clients", database),
+        "client_id": get_next_id("Clients", database),  # Utiliser get_next_id pour obtenir le prochain ID disponible
         "strategy": client_data['risk_profile'],
         "investment_sector": manager["investment_sector"],
         "value": client_data['investment_amount'],
         "size": size,
-        "assets": tickers,
+        "assets": [t for t in tickers if t not in missing_tickers]
     }
     
+
     return portfolio
 
 
@@ -303,22 +309,23 @@ def download_asset(ticker: str) -> Optional[Product]:
     """
     try:
         # Ajout d'un délai aléatoire entre 1 et 3 secondes pour éviter les limites de requêtes
-        time.sleep(random.uniform(1, 3))
+        time.sleep(5)
         
         # Téléchargement des données avec yfinance
         stock = yf.Ticker(ticker)
         info = stock.info
-        
+
         # Calcul des rendements quotidiens
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=365)
+        start_date = datetime(2022, 1, 1)
+        end_date = datetime(2024, 12, 31)
+        
         hist = stock.history(start=start_date, end=end_date)
         
         if hist.empty:
             print(f"⚠️ Aucune donnée historique disponible pour {ticker}")
             return None
-            
-        # Calcul des rendements quotidiens
+
+        #Calcul des rendements quotidiens
         returns = {}
         for date, row in hist.iterrows():
             if 'Close' in row:
@@ -327,13 +334,17 @@ def download_asset(ticker: str) -> Optional[Product]:
         # Création de l'objet Product
         return Product(
             ticker=ticker,
-            sector=info.get('sector', 'Unknown'),
-            returns=returns
+            sector=info.get('sector'),
+            returns=returns,
+            market_cap=info.get('marketCap'),
+            company_name=info.get('longName'),
+            stock_exchange=info.get('exchange')
         )
         
     except Exception as e:
         print(f"❌ Erreur lors du téléchargement des données pour {ticker}: {str(e)}")
         return None
+
 
 def check_and_download_assets(tickers: List[str], db: sqlite3.Connection) -> List[str]:
     """
@@ -354,265 +365,217 @@ def check_and_download_assets(tickers: List[str], db: sqlite3.Connection) -> Lis
                 print(f"📥 Téléchargement des données pour {ticker}...")
                 product = download_asset(ticker)
                 if product:
-                    product.save(db)
+                    try:
+                        product_id = product.save(db)
+                        if product_id:
+                            print(f"✅ Données de {ticker} sauvegardées avec succès.")
+                        else:
+                            print(f"❌ Erreur lors de la sauvegarde des données de {ticker}")
+                            missing_tickers.append(ticker)
+                    except Exception as e:
+                        print(f"❌ Erreur lors de la sauvegarde des données de {ticker}: {str(e)}")
+                        missing_tickers.append(ticker)
                 else:
+                    print(f"❌ Impossible de télécharger les données de {ticker}")
                     missing_tickers.append(ticker)
+            else:
+                print(f"ℹ️ Les données de {ticker} existent déjà.")
+            
         except Exception as e:
             print(f"❌ Erreur lors de la vérification/téléchargement de {ticker}: {str(e)}")
             missing_tickers.append(ticker)
     
+
     return missing_tickers
 
-def download_stock_data(tickers: List[str], start_date: str, end_date: str) -> pd.DataFrame:
-    """
-    Télécharge les données boursières pour une liste de tickers.
+
+
+
+# def is_database_empty() -> bool:
+#     """
+#     Vérifie si la base de données est vide.
     
-    Args:
-        tickers: Liste des symboles boursiers
-        start_date: Date de début au format 'YYYY-MM-DD'
-        end_date: Date de fin au format 'YYYY-MM-DD'
-        
-    Returns:
-        pd.DataFrame: DataFrame contenant les données boursières
-    """
-    try:
-        # Initialisation de l'API Alpha Vantage
-        ts = TimeSeries(key='demo', output_format='pandas')
-        
-        # Téléchargement des données avec un délai entre chaque ticker
-        all_data = []
-        for ticker in tickers:
-            try:
-                # Ajout d'un délai aléatoire entre 1 et 3 secondes
-                time.sleep(random.uniform(1, 3))
-                
-                # Téléchargement des données pour un seul ticker
-                data, _ = ts.get_daily_adjusted(symbol=ticker, outputsize='full')
-                
-                # Filtrer les données selon la plage de dates
-                data = data[start_date:end_date]
-                
-                if not data.empty:
-                    # Calcul des rendements pour ce ticker
-                    data['Return'] = data['5. adjusted close'].pct_change()
-                    data = data[['Return']].copy()
-                    data['Ticker'] = ticker
-                    data.reset_index(inplace=True)
-                    all_data.append(data)
-                    print(f"✅ Données téléchargées pour {ticker}")
-                else:
-                    print(f"⚠️ Aucune donnée disponible pour {ticker}")
-                    
-            except Exception as e:
-                print(f"❌ Erreur lors du téléchargement de {ticker}: {str(e)}")
-                continue
-        
-        if not all_data:
-            print("❌ Aucune donnée n'a pu être téléchargée")
-            return pd.DataFrame()
-        
-        # Combinaison de toutes les données
-        combined_data = pd.concat(all_data, ignore_index=True)
-        
-        # Conversion des dates en format string
-        combined_data['Date'] = combined_data['date'].dt.strftime('%Y-%m-%d')
-        combined_data = combined_data[['Date', 'Return', 'Ticker']]
-        
-        return combined_data
-        
-    except Exception as e:
-        print(f"❌ Erreur lors du téléchargement des données : {str(e)}")
-        return pd.DataFrame()
+#     Returns:
+#         bool: True si la base de données est vide, False sinon
+#     """
+#     try:
+#         with BaseModel.get_db_connection() as db:
+#             cursor = db.cursor()
+            
+#             # Vérifier si les tables principales sont vides
+#             tables = ['Clients', 'Managers', 'Portfolios', 'Products', 'Returns']
+#             for table in tables:
+#                 cursor.execute(f"SELECT COUNT(*) FROM {table}")
+#                 count = cursor.fetchone()[0]
+#                 if count > 0:
+#                     return False
+            
+#             return True
+            
+#     except Exception as e:
+#         print(f"❌ Erreur lors de la vérification de la base de données : {str(e)}")
+#         return False
 
-def save_stock_data(data: pd.DataFrame, db: sqlite3.Connection) -> None:
-    """
-    Sauvegarde les données boursières dans la base de données.
+# def create_sample_data() -> None:
+#     """Crée des données d'exemple dans la base de données si elle est vide."""
+#     try:
+#         # Création de la base de données
+#         BaseModel.create_database()
+#         print("✅ Toutes les tables ont été créées avec succès.")
+        
+#         # Vérifier si la base de données est vide
+#         if not is_database_empty():
+#             print("ℹ️ La base de données n'est pas vide, les données d'exemple ne seront pas créées.")
+#             return
+            
+#         print("📝 Création des données d'exemple...")
+        
+#         # Création des gestionnaires
+#         managers = [
+#             {
+#                 "name": "John Smith Sr",
+#                 "age": 45,
+#                 "country": "USA",
+#                 "email": "john.smith.manager1@example.com",
+#                 "seniority": "Senior",
+#                 "investment_sector": "Technology",
+#                 "strategies": "Low Risk,Medium Risk"  # Convertir la liste en chaîne
+#             },
+#             {
+#                 "name": "Marie Dupont Jr",
+#                 "age": 38,
+#                 "country": "France",
+#                 "email": "marie.dupont.manager2@example.com",
+#                 "seniority": "Mid-level",
+#                 "investment_sector": "Healthcare",
+#                 "strategies": "Medium Risk,High Risk"  # Convertir la liste en chaîne
+#             },
+#             {
+#                 "name": "David Chen III",
+#                 "age": 42,
+#                 "country": "China",
+#                 "email": "david.chen.manager3@example.com",
+#                 "seniority": "Senior",
+#                 "investment_sector": "Technology",
+#                 "strategies": "High Risk,Medium Risk"  # Convertir la liste en chaîne
+#             }
+#         ]
+        
+#         manager_ids = []
+#         with BaseModel.get_db_connection() as db:
+#             for manager_data in managers:
+#                 manager = AssetManager(**manager_data)
+#                 manager_id = manager.save(db)
+#                 if manager_id is None:
+#                     print("❌ Impossible de créer un gestionnaire.")
+#                     return
+#                 manager_ids.append(manager_id)
+            
+#             # Création des clients
+#             clients = [
+#                 {
+#                     "name": "Alice Johnson Sr",
+#                     "age": 35,
+#                     "country": "USA",
+#                     "email": "alice.j.client1@example.com",
+#                     "risk_profile": "Low Risk",
+#                     "investment_amount": 100000.0,
+#                     "manager_id": manager_ids[0]
+#                 },
+#                 {
+#                     "name": "Pierre Martin Jr",
+#                     "age": 45,
+#                     "country": "France",
+#                     "email": "pierre.m.client2@example.com",
+#                     "risk_profile": "Medium Risk",
+#                     "investment_amount": 150000.0,
+#                     "manager_id": manager_ids[1]
+#                 },
+#                 {
+#                     "name": "Li Wei III",
+#                     "age": 40,
+#                     "country": "China",
+#                     "email": "li.w.client3@example.com",
+#                     "risk_profile": "High Risk",
+#                     "investment_amount": 200000.0,
+#                     "manager_id": manager_ids[2]
+#                 }
+#             ]
+            
+#             client_ids = []
+#             for client_data in clients:
+#                 client = Client(**client_data)
+#                 client_id = client.save(db)
+#                 if client_id is None:
+#                     print("❌ Impossible de créer un client.")
+#                     return
+#                 client_ids.append(client_id)
+            
+#             # Création des portefeuilles
+#             portfolios = [
+#                 {
+#                     "manager_id": manager_ids[0],
+#                     "client_id": client_ids[0],
+#                     "strategy": "Low Risk",
+#                     "investment_sector": "Technology",
+#                     "size": 5,
+#                     "value": 100000.0,
+#                     "assets": ["AAPL", "MSFT"]
+#                 },
+#                 {
+#                     "manager_id": manager_ids[1],
+#                     "client_id": client_ids[1],
+#                     "strategy": "Medium Risk",
+#                     "investment_sector": "Healthcare",
+#                     "size": 4,
+#                     "value": 150000.0,
+#                     "assets": ["JNJ", "PFE"]
+#                 },
+#                 {
+#                     "manager_id": manager_ids[2],
+#                     "client_id": client_ids[2],
+#                     "strategy": "High Risk",
+#                     "investment_sector": "Technology",
+#                     "size": 6,
+#                     "value": 200000.0,
+#                     "assets": ["BABA", "JD"]
+#                 }
+#             ]
+            
+#             portfolio_ids = []
+#             for portfolio_data in portfolios:
+#                 portfolio = Portfolio(**portfolio_data)
+#                 portfolio_id = portfolio.save(db)
+#                 if portfolio_id is None:
+#                     print("❌ Impossible de créer un portefeuille.")
+#                     return
+#                 portfolio_ids.append(portfolio_id)
+            
+#             # Mise à jour des IDs de portefeuille pour les clients
+#             cursor = db.cursor()
+#             for client_id, portfolio_id in zip(client_ids, portfolio_ids):
+#                 cursor.execute("""
+#                     UPDATE Clients
+#                     SET portfolio_id = ?
+#                     WHERE id = ?
+#                 """, (portfolio_id, client_id))
+            
+#             db.commit()
+#             print("✅ Base de données initialisée avec succès.")
+            
+#     except Exception as e:
+#         print(f"❌ Une erreur inattendue s'est produite : {str(e)}")
+#         return
+
+# if __name__ == "__main__":
+#     # Création de la base de données et des données d'exemple
+#     create_sample_data()
     
-    Args:
-        data: DataFrame contenant les données boursières
-        db: Connexion à la base de données
-    """
-    try:
-        cursor = db.cursor()
-        
-        # Parcours des données
-        for _, row in data.iterrows():
-            date = row['Date']
-            ticker = row['Ticker']
-            return_value = row['Return']
-            
-            # Vérification de l'existence du produit
-            if not Product.exists(ticker):
-                # Création du produit avec un secteur par défaut
-                product = Product(ticker=ticker, sector="Unknown")
-                product.save(db)
-            
-            # Sauvegarde du rendement
-            cursor.execute("""
-                INSERT OR REPLACE INTO Returns (date, ticker, return_value)
-                VALUES (?, ?, ?)
-            """, (date, ticker, return_value))
-        
-        db.commit()
-        print("✅ Données boursières sauvegardées avec succès.")
-        
-    except Exception as e:
-        print(f"❌ Erreur lors de la sauvegarde des données : {str(e)}")
-        db.rollback()
-
-def create_sample_data() -> None:
-    """Crée des données d'exemple dans la base de données."""
-    try:
-        # Création de la base de données
-        BaseModel.create_database()
-        
-        # Connexion à la base de données
-        with BaseModel.get_db_connection() as db:
-            # Création des gestionnaires
-            managers = [
-                AssetManager(
-                    name="John Smith",
-                    age=45,
-                    country="USA",
-                    email="john.smith.manager@example.com",
-                    seniority="Senior",
-                    investment_sector="Technology",
-                    strategies=["Growth", "Value"]
-                ),
-                AssetManager(
-                    name="Marie Dupont",
-                    age=38,
-                    country="France",
-                    email="marie.dupont.manager@example.com",
-                    seniority="Mid",
-                    investment_sector="Healthcare",
-                    strategies=["Value", "Income"]
-                ),
-                AssetManager(
-                    name="David Chen",
-                    age=42,
-                    country="China",
-                    email="david.chen.manager@example.com",
-                    seniority="Senior",
-                    investment_sector="Technology",
-                    strategies=["Growth", "Momentum"]
-                )
-            ]
-            
-            manager_ids = []
-            for manager in managers:
-                manager_id = manager.save(db)
-                manager_ids.append(manager_id)
-            
-            # Création des clients
-            clients = [
-                Client(
-                    name="Alice Johnson",
-                    age=35,
-                    country="USA",
-                    email="alice.j.client@example.com",
-                    risk_profile="Moderate",
-                    investment_amount=100000.0,
-                    manager_id=manager_ids[0]
-                ),
-                Client(
-                    name="Pierre Martin",
-                    age=45,
-                    country="France",
-                    email="pierre.m.client@example.com",
-                    risk_profile="Conservative",
-                    investment_amount=150000.0,
-                    manager_id=manager_ids[1]
-                ),
-                Client(
-                    name="Li Wei",
-                    age=40,
-                    country="China",
-                    email="li.w.client@example.com",
-                    risk_profile="Aggressive",
-                    investment_amount=200000.0,
-                    manager_id=manager_ids[2]
-                )
-            ]
-            
-            client_ids = []
-            for client in clients:
-                client_id = client.save(db)
-                client_ids.append(client_id)
-            
-            # Création des portefeuilles
-            portfolios = [
-                Portfolio(
-                    manager_id=manager_ids[0],
-                    client_id=client_ids[0],
-                    strategy="Growth",
-                    investment_sector="Technology",
-                    size=5,
-                    value=100000.0,
-                    assets=["AAPL", "MSFT"]
-                ),
-                Portfolio(
-                    manager_id=manager_ids[1],
-                    client_id=client_ids[1],
-                    strategy="Value",
-                    investment_sector="Healthcare",
-                    size=4,
-                    value=150000.0,
-                    assets=["JNJ", "PFE"]
-                ),
-                Portfolio(
-                    manager_id=manager_ids[2],
-                    client_id=client_ids[2],
-                    strategy="Growth",
-                    investment_sector="Technology",
-                    size=6,
-                    value=200000.0,
-                    assets=["BABA", "JD"]
-                )
-            ]
-            
-            portfolio_ids = []
-            for portfolio in portfolios:
-                portfolio_id = portfolio.save(db)
-                portfolio_ids.append(portfolio_id)
-            
-            # Mise à jour des IDs de portefeuille pour les clients
-            for client_id, portfolio_id in zip(client_ids, portfolio_ids):
-                cursor = db.cursor()
-                cursor.execute("""
-                    UPDATE Clients
-                    SET portfolio_id = ?
-                    WHERE id = ?
-                """, (portfolio_id, client_id))
-            
-            db.commit()
-            print("✅ Données d'exemple créées avec succès.")
-            
-    except Exception as e:
-        print(f"❌ Une erreur inattendue s'est produite : {str(e)}")
-        if 'db' in locals():
-            db.rollback()
-
-def main():
-    """Fonction principale du programme."""
-    try:
-        # Création des données d'exemple
-        create_sample_data()
-        
-        # Téléchargement des données boursières
-        tickers = ["AAPL", "MSFT", "JNJ", "PFE""BABA", "JD"]
-        start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
-        end_date = datetime.now().strftime("%Y-%m-%d")
-        
-        data = download_stock_data(tickers, start_date, end_date)
-        
-        if not data.empty:
-            # Sauvegarde des données
-            with BaseModel.get_db_connection() as db:
-                save_stock_data(data, db)
-        
-    except Exception as e:
-        print(f"❌ Une erreur inattendue s'est produite : {str(e)}")
-
-if __name__ == "__main__":
-    main()
+#     # Téléchargement des données boursières
+#     print("\n📥 Téléchargement des données boursières...")
+#     tickers = ["AAPL", "MSFT", "JNJ", "PFE", "BABA", "JD"]
+#     data = download_stock_data(tickers)
+#     if data is not None:
+#         save_stock_data(data)
+#     else:
+#         print("⚠️ Aucune donnée boursière n'a pu être téléchargée.")
