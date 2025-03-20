@@ -75,6 +75,7 @@ def register_new_client() -> None:
                     sortie = True
 
         if not sortie:
+            print("Le manager crée un portefeuille adapté au client, il doit donc récupérer les actifs du portefeuille")
             # Création du portefeuille
             portfolio_data = create_portfolio(assigned_manager, client_data, db)
             

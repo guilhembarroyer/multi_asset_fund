@@ -126,9 +126,13 @@ def get_risk_profile():
 
 def get_email(name):
     """Demande un email valide contenant le nom du client."""
-    while (email := input("📌 Entrez l'email : ")): #.lower().replace(" ", ".") not in name.lower().replace(" ", "."):
+    while True:
+        email = input("📌 Entrez l'email : ").lower()
+        # Convertir le nom en format email (avec points)
+        name_email = name.lower().replace(" ", ".")
+        if name_email in email:
+            return email
         print(f"❌ L'email doit contenir le nom du client ({name}).")
-    return email
 
 
 def get_investment_amount():
@@ -145,9 +149,9 @@ def get_investment_amount():
 
 
 def get_registration_date():
-    """Demande et valide une date d'enregistrement (avant le 01-01-2023)."""
+    """Demande et valide une date d'enregistrement (avant le 2023-01-01)."""
     while True:
-        date_str = input("📌 Entrez la date d'enregistrement, doit être antérieure au 01-01-2023 (format YYYY-MM-DD) : ")
+        date_str = input("📌 Entrez la date d'enregistrement, doit être antérieure au 2023-01-01 (format YYYY-MM-DD) : ")
         try:
             date = datetime.strptime(date_str, "%Y-%m-%d")
             if date >= datetime(2023, 1, 1):
@@ -255,7 +259,7 @@ def get_corresponding_assets(sector):
     s = Screener()
 
     # Récupérer les actions les plus échangées
-    query_results = s.get_screeners(sector, 2)
+    query_results = s.get_screeners(sector, 8)
 
     tickers=[stock["symbol"] for stock in query_results[sector]["quotes"]]
 
@@ -273,13 +277,11 @@ def create_portfolio(manager, client_data, database):
     size = len(tickers) - len(missing_tickers)
     if missing_tickers:
         print(f"⚠️ {len(missing_tickers)} actifs n'ont pas pu être téléchargés.")
-        if size < 1:  # Minimum 1 actif requis
+        if size < 5:  # Minimum 1 actif requis
             print("❌ Pas assez d'actifs disponibles pour créer le portefeuille.")
             return None
     
-    print("merge")
-    Product.merge_returns_tables()
-    print("merge reussi")
+    
     portfolio = {
         "manager_id": client_data['manager_id'],
         "client_id": get_next_id("Clients", database),  # Utiliser get_next_id pour obtenir le prochain ID disponible
@@ -300,6 +302,7 @@ def create_portfolio(manager, client_data, database):
 def download_asset(ticker: str) -> Optional[Product]:
     """
     Télécharge les données d'un actif depuis Yahoo Finance.
+    Ne récupère que les rendements hebdomadaires du vendredi soir.
     
     Args:
         ticker: Symbole de l'actif à télécharger
@@ -309,17 +312,18 @@ def download_asset(ticker: str) -> Optional[Product]:
     """
     try:
         # Ajout d'un délai aléatoire entre 1 et 3 secondes pour éviter les limites de requêtes
-        time.sleep(5)
+        time.sleep(1)
         
         # Téléchargement des données avec yfinance
         stock = yf.Ticker(ticker)
         info = stock.info
 
-        # Calcul des rendements quotidiens
+        # Calcul des rendements hebdomadaires (vendredi soir)
         start_date = datetime(2022, 1, 1)
         end_date = datetime(2024, 12, 31)
         
-        hist = stock.history(start=start_date, end=end_date)
+        # Télécharger les données avec un intervalle hebdomadaire
+        hist = stock.history(start=start_date, end=end_date, interval='1wk')
         
         if hist.empty:
             print(f"⚠️ Aucune donnée historique disponible pour {ticker}")

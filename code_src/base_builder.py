@@ -128,9 +128,6 @@ class BaseModel:
                     FOREIGN KEY (client_id) REFERENCES Clients (id)
                 );
 
-                CREATE TABLE IF NOT EXISTS Returns_Master (
-                    date TEXT PRIMARY KEY
-                );
 
                 CREATE TABLE IF NOT EXISTS Products (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -144,10 +141,13 @@ class BaseModel:
                 CREATE TABLE IF NOT EXISTS Portfolios_Products (
                     portfolio_id INTEGER,
                     product_id INTEGER,
+                    quantity INTEGER NOT NULL,
+                    weight REAL NOT NULL DEFAULT 0.0,
                     PRIMARY KEY (portfolio_id, product_id),
                     FOREIGN KEY (portfolio_id) REFERENCES Portfolios (id),
                     FOREIGN KEY (product_id) REFERENCES Products (id)
                 );
+
             """)
             
             conn.commit()
@@ -162,7 +162,7 @@ class BaseModel:
                 conn.close()
 
     @classmethod
-    def get_db_connection(cls) -> sqlite3.Connection:
+    def get_db_connection(cls) -> sqlite3.Connection:   
         """
         Crée et retourne une connexion à la base de données avec timeout.
         
@@ -366,9 +366,9 @@ class Portfolio(BaseModel):
             product_id = cursor.fetchone()[0]
             
             cursor.execute("""
-                INSERT INTO Portfolios_Products (portfolio_id, product_id)
-                VALUES (?, ?)
-            """, (portfolio_id, product_id))
+                INSERT INTO Portfolios_Products (portfolio_id, product_id, quantity, weight)
+                VALUES (?, ?, ?, ?)
+            """, (portfolio_id, product_id, 1, 0.0))
 
         db.commit()
         return portfolio_id 
@@ -462,11 +462,7 @@ class Product(BaseModel):
                     VALUES (?, ?)
                 """, (date, value))
                 
-                # Ajouter la date à la table Returns_Master si elle n'existe pas
-                cursor.execute("""
-                    INSERT OR IGNORE INTO Returns_Master (date)
-                    VALUES (?)
-                """, (date,))
+        
             
             # Valider la transaction
             db.commit()
@@ -504,93 +500,30 @@ class Product(BaseModel):
         Returns:
             Optional[Product]: Le produit trouvé ou None si non trouvé
         """
-        with cls.get_db_connection() as db:
-            cursor = db.cursor()
-            cursor.execute("""
-                SELECT p.ticker, p.sector
-                FROM Products p
-                WHERE p.ticker = ?
-            """, (ticker,))
+        #with cls.get_db_connection() as db:
+        #    cursor = db.cursor()
+        #    cursor.execute("""
+        #        SELECT p.ticker, p.sector
+        #        FROM Products p
+        #        WHERE p.ticker = ?
+        #    """, (ticker,))
             
-            row = cursor.fetchone()
-            if row:
-                # Récupération des rendements
-                cursor.execute("""
-                    SELECT date, return_value
-                    FROM Returns
-                    WHERE ticker = ?
-                """, (ticker,))
-                returns = {row[0]: row[1] for row in cursor.fetchall()}
+        #    row = cursor.fetchone()
+        #    if row:
+        #        # Récupération des rendements
+        #        cursor.execute("""
+        #            SELECT date, return_value
+        #            FROM Returns
+        #            WHERE ticker = ?
+        #        """, (ticker,))
+        #        returns = {row[0]: row[1] for row in cursor.fetchall()}
                 
-                return cls(*row, returns=returns)
-            return None
+        #        return cls(*row, returns=returns)
+        #    return None
+        pass
 
-    @classmethod
-    def merge_returns_tables(cls) -> None:
-        """
-        Fusionne toutes les tables de rendements individuelles en une seule table Returns.
-        """
-        try:
-            with cls.get_db_connection() as db:
-                cursor = db.cursor()
-                
-                # Démarrer une transaction
-                db.execute("BEGIN IMMEDIATE")
-                
-                # Créer la table Returns finale
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS Returns (
-                        date TEXT PRIMARY KEY
-                    )
-                """)
-                
-                # Récupérer tous les tickers
-                cursor.execute("SELECT ticker FROM Products")
-                tickers = [row[0] for row in cursor.fetchall()]
-                
-                # Pour chaque ticker, ajouter sa colonne à la table Returns
-                for ticker in tickers:
-                    table_name = f"returns_{ticker.replace('-', '_')}"
-                    cursor.execute(f"ALTER TABLE Returns ADD COLUMN {table_name} REAL")
-                
-                # Récupérer toutes les dates uniques
-                all_dates = set()
-                for ticker in tickers:
-                    table_name = f"returns_{ticker.replace('-', '_')}"
-                    cursor.execute(f"SELECT date FROM {table_name}")
-                    all_dates.update(row[0] for row in cursor.fetchall())
-                
-                # Insérer les données dans la table Returns
-                for date in sorted(all_dates):
-                    values = [date]
-                    for ticker in tickers:
-                        table_name = f"returns_{ticker.replace('-', '_')}"
-                        cursor.execute(f"SELECT returns FROM {table_name} WHERE date = ?", (date,))
-                        result = cursor.fetchone()
-                        values.append(result[0] if result else None)
-                    
-                    placeholders = ','.join(['?' for _ in values])
-                    cursor.execute(f"""
-                        INSERT INTO Returns (date, {','.join(f'returns_{t.replace("-", "_")}' for t in tickers)})
-                        VALUES ({placeholders})
-                    """, values)
-                
-                # Supprimer les tables individuelles
-                for ticker in tickers:
-                    table_name = f"returns_{ticker.replace('-', '_')}"
-                    cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
-                
-                # Valider la transaction
-                db.commit()
-                print("✅ Tables de rendements fusionnées avec succès.")
-                
-        except sqlite3.OperationalError as e:
-            if 'db' in locals():
-                db.rollback()
-            print(f"❌ Erreur lors de la fusion des tables : {str(e)}")
-            raise e
-
-   
+    
+    
 
 
 ### Fonctions utilitaires ###
@@ -610,3 +543,195 @@ def get_next_id(table: str, db: sqlite3.Connection) -> int:
     cursor.execute(f"SELECT MAX(id) FROM {table}")
     max_id = cursor.fetchone()[0]
     return 1 if max_id is None else max_id + 1
+
+
+class PortfolioProduct(BaseModel):
+    """Classe représentant la relation entre un portefeuille et un produit."""
+    
+    def __init__(self, portfolio_id: int, product_id: int, quantity: int, weight: float = 0.0):
+        self.portfolio_id = portfolio_id
+        self.product_id = product_id
+        self.quantity = quantity
+        self.weight = weight
+
+    def save(self, db: sqlite3.Connection) -> None:
+        """
+        Sauvegarde la relation portefeuille-produit dans la base de données.
+        
+        Args:
+            db: Connexion à la base de données
+        """
+        cursor = db.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO Portfolios_Products (portfolio_id, product_id, quantity, weight)
+            VALUES (?, ?, ?, ?)
+        """, (self.portfolio_id, self.product_id, self.quantity, self.weight))
+        db.commit()
+
+    def update_weight(self, db: sqlite3.Connection, new_weight: float) -> None:
+        """
+        Met à jour le poids d'un produit dans un portefeuille.
+        
+        Args:
+            db: Connexion à la base de données
+            new_weight: Nouveau poids à appliquer
+        """
+        cursor = db.cursor()
+        cursor.execute("""
+            UPDATE Portfolios_Products
+            SET weight = ?
+            WHERE portfolio_id = ? AND product_id = ?
+        """, (new_weight, self.portfolio_id, self.product_id))
+        db.commit()
+        self.weight = new_weight
+
+    @classmethod
+    def get_by_portfolio_id(cls, portfolio_id: int, db: sqlite3.Connection) -> List['PortfolioProduct']:
+        """
+        Récupère toutes les relations portefeuille-produit pour un portefeuille donné.
+        
+        Args:
+            portfolio_id: ID du portefeuille
+            db: Connexion à la base de données
+            
+        Returns:
+            List[PortfolioProduct]: Liste des relations portefeuille-produit
+        """
+        cursor = db.cursor()
+        cursor.execute("""
+            SELECT portfolio_id, product_id, quantity, weight
+            FROM Portfolios_Products
+            WHERE portfolio_id = ?
+        """, (portfolio_id,))
+        
+        return [cls(row[0], row[1], row[2], row[3]) for row in cursor.fetchall()]
+
+
+class Deal(BaseModel):
+    """Classe représentant une transaction (deal) dans le fonds."""
+    
+    def __init__(self, portfolio_id: int, manager_id: int, date: str, ticker: str,
+                 action: str, quantity: int, price: float, total_value: float,
+                 portfolio_weight: float, manager_weight: float, fund_weight: float):
+        self.portfolio_id = portfolio_id
+        self.manager_id = manager_id
+        self.date = date
+        self.ticker = ticker
+        self.action = action  # "BUY" ou "SELL"
+        self.quantity = quantity
+        self.price = price
+        self.total_value = total_value
+        self.portfolio_weight = portfolio_weight
+        self.manager_weight = manager_weight
+        self.fund_weight = fund_weight
+
+    def save(self, db: sqlite3.Connection) -> None:
+        """
+        Sauvegarde le deal dans les différentes tables.
+        
+        Args:
+            db: Connexion à la base de données
+        """
+        cursor = db.cursor()
+        
+        # Sauvegarder dans Deals_portfolio
+        cursor.execute("""
+            INSERT INTO Deals_portfolio 
+            (portfolio_id, date, ticker, action, quantity, price, total_value, 
+             portfolio_weight, manager_weight, fund_weight)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (self.portfolio_id, self.date, self.ticker, self.action, self.quantity,
+              self.price, self.total_value, self.portfolio_weight, self.manager_weight,
+              self.fund_weight))
+        
+        # Sauvegarder dans Deals_manager
+        cursor.execute("""
+            INSERT INTO Deals_manager 
+            (manager_id, date, ticker, action, quantity, price, total_value, 
+             portfolio_weight, manager_weight, fund_weight)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (self.manager_id, self.date, self.ticker, self.action, self.quantity,
+              self.price, self.total_value, self.portfolio_weight, self.manager_weight,
+              self.fund_weight))
+        
+        # Sauvegarder dans Deals_fund
+        cursor.execute("""
+            INSERT INTO Deals_fund 
+            (date, ticker, action, quantity, price, total_value, 
+             portfolio_weight, manager_weight, fund_weight)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (self.date, self.ticker, self.action, self.quantity, self.price,
+              self.total_value, self.portfolio_weight, self.manager_weight,
+              self.fund_weight))
+        
+        db.commit()
+
+    @classmethod
+    def get_by_portfolio_id(cls, portfolio_id: int, db: sqlite3.Connection) -> List['Deal']:
+        """
+        Récupère tous les deals d'un portefeuille.
+        
+        Args:
+            portfolio_id: ID du portefeuille
+            db: Connexion à la base de données
+            
+        Returns:
+            List[Deal]: Liste des deals du portefeuille
+        """
+        cursor = db.cursor()
+        cursor.execute("""
+            SELECT portfolio_id, manager_id, date, ticker, action, quantity, price,
+                   total_value, portfolio_weight, manager_weight, fund_weight
+            FROM Deals_portfolio
+            WHERE portfolio_id = ?
+            ORDER BY date
+        """, (portfolio_id,))
+        
+        return [cls(row[0], row[1], row[2], row[3], row[4], row[5], row[6],
+                   row[7], row[8], row[9], row[10]) for row in cursor.fetchall()]
+
+    @classmethod
+    def get_by_manager_id(cls, manager_id: int, db: sqlite3.Connection) -> List['Deal']:
+        """
+        Récupère tous les deals d'un manager.
+        
+        Args:
+            manager_id: ID du manager
+            db: Connexion à la base de données
+            
+        Returns:
+            List[Deal]: Liste des deals du manager
+        """
+        cursor = db.cursor()
+        cursor.execute("""
+            SELECT portfolio_id, manager_id, date, ticker, action, quantity, price,
+                   total_value, portfolio_weight, manager_weight, fund_weight
+            FROM Deals_manager
+            WHERE manager_id = ?
+            ORDER BY date
+        """, (manager_id,))
+        
+        return [cls(row[0], row[1], row[2], row[3], row[4], row[5], row[6],
+                   row[7], row[8], row[9], row[10]) for row in cursor.fetchall()]
+
+    @classmethod
+    def get_all_fund_deals(cls, db: sqlite3.Connection) -> List['Deal']:
+        """
+        Récupère tous les deals du fonds.
+        
+        Args:
+            db: Connexion à la base de données
+            
+        Returns:
+            List[Deal]: Liste de tous les deals du fonds
+        """
+        cursor = db.cursor()
+        cursor.execute("""
+            SELECT portfolio_id, manager_id, date, ticker, action, quantity, price,
+                   total_value, portfolio_weight, manager_weight, fund_weight
+            FROM Deals_fund
+            ORDER BY date
+        """)
+        
+        return [cls(row[0], row[1], row[2], row[3], row[4], row[5], row[6],
+                   row[7], row[8], row[9], row[10]) for row in cursor.fetchall()]
