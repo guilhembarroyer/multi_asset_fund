@@ -1,20 +1,15 @@
-import os
 import sqlite3
-from typing import Optional
-import random
 from datetime import datetime, timedelta
-import pandas as pd
-import numpy as np
+
 
 from data_collector import (
     generate_precise_client,
     generate_random_client,
     manager_affiliation,
     create_manager,
-    create_portfolio,
-    check_and_download_assets
+    create_portfolio
 )
-from base_builder import Client, AssetManager, Portfolio, BaseModel, Product, get_eligible_managers, get_next_id
+from base_builder import Client, AssetManager, Portfolio, BaseModel
 from strategies import Simulation
 
 
@@ -110,49 +105,25 @@ def register_new_client() -> None:
         print(f"❌ Une erreur inattendue s'est produite : {e}")
 
 
-def main() -> None:
-    """
-    Fonction principale du programme.
-    
-    Cette fonction gère le menu principal et le flux de contrôle du programme.
-    """
-    # Création de la base de données si elle n'existe pas
-    BaseModel.create_database()
-    
-    print("\n=== Système de Gestion de Fonds d'Investissement ===")
-    print("1. Enregistrer un nouveau client")
-    print("2. Analyser les performances")
-    print("3. Quitter")
-    
-    choice = input("\nVotre choix : ")
-    
-    if choice == "1":
-        register_new_client()
-    elif choice == "2":
-        analyze_performance()
-    elif choice == "3":
-        print("\nAu revoir !")
-    else:
-        print("\nChoix invalide. Veuillez réessayer.")
-        main()
+
 
 
 def analyze_performance():
     """Fonction pour analyser les performances."""
     print("\n=== Analyse des Performances ===")
     print("1. Analyser un client spécifique")
-    print("2. Analyser un manager spécifique")
-    print("3. Analyser le fonds globalement")
+    #print("2. Analyser un manager spécifique")
+    #print("3. Analyser le fonds globalement")
     print("4. Retour au menu principal")
     
     choice = input("\nVotre choix : ")
     
     if choice == "1":
         analyze_client_performance()
-    elif choice == "2":
-        analyze_manager_performance()
-    elif choice == "3":
-        analyze_fund_performance()
+    #elif choice == "2":
+    #    analyze_manager_performance()
+    #elif choice == "3":
+        #analyze_fund_performance()
     elif choice == "4":
         main()
     else:
@@ -170,7 +141,7 @@ def analyze_client_performance():
         SELECT c.id, c.name, c.registration_date, p.id as portfolio_id, p.strategy
         FROM Clients c
         LEFT JOIN Portfolios p ON c.id = p.client_id
-        ORDER BY c.registration_date DESC
+        ORDER BY c.id DESC
         LIMIT 1
     """)
     last_client = cursor.fetchone()
@@ -254,14 +225,33 @@ def analyze_client_performance():
     BaseModel.reinitialize_portfolio(db, portfolio_id)
     db.close()
 
-#def analyze_fund_performance():
-#    """Fonction pour analyser les performances globales du fonds."""
-#        """Fonction pour analyser les performances d'un client spécifique."""
 
 
-
-
-
+def main() -> None:
+    """
+    Fonction principale du programme.
+    
+    Cette fonction gère le menu principal et le flux de contrôle du programme.
+    """
+    # Création de la base de données si elle n'existe pas
+    BaseModel.create_database()
+    
+    print("\n=== Système de Gestion de Fonds d'Investissement ===")
+    print("1. Enregistrer un nouveau client")
+    print("2. Analyser les performances")
+    print("3. Quitter")
+    
+    choice = input("\nVotre choix : ")
+    
+    if choice == "1":
+        register_new_client()
+    elif choice == "2":
+        analyze_performance()
+    elif choice == "3":
+        print("\nAu revoir !")
+    else:
+        print("\nChoix invalide. Veuillez réessayer.")
+        main()
 
 
 if __name__ == "__main__":

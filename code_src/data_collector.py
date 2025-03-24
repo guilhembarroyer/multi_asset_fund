@@ -1,10 +1,9 @@
 from faker import Faker
 fake = Faker()
 
-from datetime import datetime, timedelta
+from datetime import datetime
 import random
 import yfinance as yf
-import pandas as pd
 import sqlite3
 import time
 
@@ -12,18 +11,12 @@ import pycountry
 from geopy.geocoders import Nominatim
 geolocator = Nominatim(user_agent="my_fund_manager")
 
-from base_builder import (
-    BaseModel, Client, AssetManager, Portfolio, Product,
-    get_eligible_managers, get_next_id
-)
+from base_builder import (Product, get_eligible_managers, get_next_id)
 
 from yahooquery import Screener
 
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional
 
-import pandas_datareader as pdr
-
-from alpha_vantage.timeseries import TimeSeries
 
 
 
@@ -57,7 +50,6 @@ def generate_valid_registration_date():
     
     # Retourner la date au format YYYY-MM-DD
     return random_date.strftime("%Y-%m-%d")
-
 
 
 def generate_random_client(database):

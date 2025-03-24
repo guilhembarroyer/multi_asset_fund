@@ -2,9 +2,19 @@ import os
 import sqlite3
 from datetime import datetime
 from typing import Optional, List, Dict, Any
-import time
-import pandas as pd
 
+
+
+def get_db_path() -> str:
+    """
+    Retourne le chemin de la base de données dans le dossier parent.
+    
+    Returns:
+        str: Chemin absolu vers la base de données
+    """
+    # Obtenir le chemin du dossier parent (un niveau au-dessus du dossier code_scr)
+    parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(parent_dir, "fund_database.db")
 
 
 class BaseModel:
@@ -586,17 +596,6 @@ def get_next_id(table: str, db: sqlite3.Connection) -> int:
     max_id = cursor.fetchone()[0]
     return 1 if max_id is None else max_id + 1
 
-
-def get_db_path() -> str:
-    """
-    Retourne le chemin de la base de données dans le dossier parent.
-    
-    Returns:
-        str: Chemin absolu vers la base de données
-    """
-    # Obtenir le chemin du dossier parent (un niveau au-dessus du dossier code_scr)
-    parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(parent_dir, "fund_database.db")
 
 
 def get_eligible_managers(db: sqlite3.Connection, client_country: str, client_seniority: str, client_strategie: str) -> List[Dict[str, Any]]:

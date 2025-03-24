@@ -1,9 +1,9 @@
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Any
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime
 import pandas as pd
 import numpy as np
-from base_builder import BaseModel, Deal
+from base_builder import  Deal
 from scipy.optimize import minimize
 from base_builder import Portfolio
 
@@ -73,13 +73,10 @@ class Simulation:
         if self.current_month != current_month:
             self.deals_count = 0
             self.current_month = current_month
-            print("new month", current_month)
 
         # Récupérer les positions actuelles
         positions, cash = self.get_portfolio_positions(self.portfolio_id, current_date)
 
-        print("old positions", positions)
-        print("cash", cash)
         print("current_date", current_date)
         # Calculer les décisions d'investissement selon la stratégie
         deals,cash,positions = self._calculate_deals(positions, cash, current_returns)
@@ -124,7 +121,11 @@ class Simulation:
                 # Créer une liste de rendements dans l'ordre chronologique
                 returns_list = [row[1] for row in reversed(results)]
                 returns_dict[ticker] = returns_list
-        
+            
+            if len(returns_list) <=12:
+                for i in range(12-len(returns_list)):
+                    returns_dict[ticker].append(0.0)
+
         # Créer la DataFrame
         returns_df = pd.DataFrame(returns_dict)
         
@@ -318,7 +319,7 @@ class Simulation:
                          
                         action = 'BUY' if weight_diff > 0 else 'SELL'
                         
-                        if (action == 'BUY' and quantity * position['price'] <= cash['value']) or (action == 'SELL' and quantity * position['price'] <= positions['value']):
+                        if (action == 'BUY' and quantity * position['price'] <= cash['value']) or (action == 'SELL' and quantity * position['price'] <= position['value']):
                             self.deals_count += 1
                             deals.append({
                             'product_id': position['product_id'],
@@ -334,8 +335,40 @@ class Simulation:
                         
                 
     
-        elif self.strategy == "High Yield Equity Only":
-           pass
+        elif self.strategy == "High Risk":
+            
+        
+            # Obtenir les poids optimaux
+            target_weights = self.optimize(current_returns, max_weight=0.2)
+
+            # Calculer les ajustements nécessaires
+            for position in positions:
+                current_weight = position['weight']
+                target_weight = round(target_weights.get(position['ticker'], 0), 2)
+                print(position['ticker'], current_weight, target_weight)
+                
+                # Calculer la quantité à acheter/vendre
+                weight_diff = target_weight - current_weight
+                quantity = int((weight_diff) * self.portfolio_value / position['price'])
+            
+                if quantity !=0:
+                        
+                    action = 'BUY' if weight_diff > 0 else 'SELL'
+                    
+                    if (action == 'BUY' and quantity * position['price'] <= cash['value']) or (action == 'SELL' and quantity * position['price'] <= position['value']):
+                        self.deals_count += 1
+                        deals.append({
+                        'product_id': position['product_id'],
+                        'action': action,
+                        'quantity': quantity,
+                        'price': position['price']
+                        })
+                        position['quantity'] += quantity
+                        position['weight'] += quantity * position['price']/self.portfolio_value
+                        position['value'] += quantity * position['price']
+                        cash['value']-= quantity * position['price']
+                        cash['weight']= cash['value']/self.portfolio_value
+                    
 
         return deals, cash, positions
     
