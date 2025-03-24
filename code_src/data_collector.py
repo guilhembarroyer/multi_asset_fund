@@ -259,7 +259,7 @@ def get_corresponding_assets(sector):
     s = Screener()
 
     # Récupérer les actions les plus échangées
-    query_results = s.get_screeners(sector, 8)
+    query_results = s.get_screeners(sector, 10)
 
     tickers=[stock["symbol"] for stock in query_results[sector]["quotes"]]
 
@@ -302,10 +302,9 @@ def create_portfolio(manager, client_data, database):
 def download_asset(ticker: str) -> Optional[Product]:
     """
     Télécharge les données d'un actif depuis Yahoo Finance.
-    Ne récupère que les rendements hebdomadaires du vendredi soir.
     
     Args:
-        ticker: Symbole de l'actif à télécharger
+        ticker: Symbole de l'actif
         
     Returns:
         Optional[Product]: L'actif téléchargé ou None en cas d'erreur
@@ -323,30 +322,36 @@ def download_asset(ticker: str) -> Optional[Product]:
         end_date = datetime(2024, 12, 31)
         
         # Télécharger les données avec un intervalle hebdomadaire
-        hist = stock.history(start=start_date, end=end_date, interval='1wk')
+        data = stock.history(start=start_date, end=end_date, interval='1wk')
         
-        if hist.empty:
+        if data.empty:
             print(f"⚠️ Aucune donnée historique disponible pour {ticker}")
             return None
 
-        #Calcul des rendements quotidiens
-        returns = {}
-        for date, row in hist.iterrows():
-            if 'Close' in row:
-                returns[date.strftime('%Y-%m-%d')] = float(row['Close'])
+        # Calculer les rendements hebdomadaires
+        data['returns'] = data['Close'].pct_change()
+        
+        # Renommer la colonne Close en price
+        data = data.rename(columns={'Close': 'price'})
+        
+        # Sélectionner uniquement les colonnes nécessaires et réinitialiser l'index pour avoir la date
+        data = data[['price', 'returns']].reset_index()
+        
+        # Renommer la colonne Date en date
+        data = data.rename(columns={'Date': 'date'})
         
         # Création de l'objet Product
-        return Product(
+        return Product( 
             ticker=ticker,
             sector=info.get('sector'),
-            returns=returns,
+            returns=data,
             market_cap=info.get('marketCap'),
             company_name=info.get('longName'),
             stock_exchange=info.get('exchange')
         )
         
     except Exception as e:
-        print(f"❌ Erreur lors du téléchargement des données pour {ticker}: {str(e)}")
+        print(f"❌ Erreur lors du téléchargement de {ticker}: {str(e)}")
         return None
 
 
@@ -368,7 +373,10 @@ def check_and_download_assets(tickers: List[str], db: sqlite3.Connection) -> Lis
             if not Product.exists(ticker):
                 print(f"📥 Téléchargement des données pour {ticker}...")
                 product = download_asset(ticker)
-                if product:
+                if product is None:
+                    print(f"❌ Erreur lors de la récupération des données de {ticker}")
+                    missing_tickers.append(ticker)
+                else:
                     try:
                         product_id = product.save(db)
                         if product_id:
@@ -379,207 +387,10 @@ def check_and_download_assets(tickers: List[str], db: sqlite3.Connection) -> Lis
                     except Exception as e:
                         print(f"❌ Erreur lors de la sauvegarde des données de {ticker}: {str(e)}")
                         missing_tickers.append(ticker)
-                else:
-                    print(f"❌ Impossible de télécharger les données de {ticker}")
-                    missing_tickers.append(ticker)
-            else:
-                print(f"ℹ️ Les données de {ticker} existent déjà.")
-            
         except Exception as e:
             print(f"❌ Erreur lors de la vérification/téléchargement de {ticker}: {str(e)}")
             missing_tickers.append(ticker)
     
-
     return missing_tickers
 
 
-
-
-# def is_database_empty() -> bool:
-#     """
-#     Vérifie si la base de données est vide.
-    
-#     Returns:
-#         bool: True si la base de données est vide, False sinon
-#     """
-#     try:
-#         with BaseModel.get_db_connection() as db:
-#             cursor = db.cursor()
-            
-#             # Vérifier si les tables principales sont vides
-#             tables = ['Clients', 'Managers', 'Portfolios', 'Products', 'Returns']
-#             for table in tables:
-#                 cursor.execute(f"SELECT COUNT(*) FROM {table}")
-#                 count = cursor.fetchone()[0]
-#                 if count > 0:
-#                     return False
-            
-#             return True
-            
-#     except Exception as e:
-#         print(f"❌ Erreur lors de la vérification de la base de données : {str(e)}")
-#         return False
-
-# def create_sample_data() -> None:
-#     """Crée des données d'exemple dans la base de données si elle est vide."""
-#     try:
-#         # Création de la base de données
-#         BaseModel.create_database()
-#         print("✅ Toutes les tables ont été créées avec succès.")
-        
-#         # Vérifier si la base de données est vide
-#         if not is_database_empty():
-#             print("ℹ️ La base de données n'est pas vide, les données d'exemple ne seront pas créées.")
-#             return
-            
-#         print("📝 Création des données d'exemple...")
-        
-#         # Création des gestionnaires
-#         managers = [
-#             {
-#                 "name": "John Smith Sr",
-#                 "age": 45,
-#                 "country": "USA",
-#                 "email": "john.smith.manager1@example.com",
-#                 "seniority": "Senior",
-#                 "investment_sector": "Technology",
-#                 "strategies": "Low Risk,Medium Risk"  # Convertir la liste en chaîne
-#             },
-#             {
-#                 "name": "Marie Dupont Jr",
-#                 "age": 38,
-#                 "country": "France",
-#                 "email": "marie.dupont.manager2@example.com",
-#                 "seniority": "Mid-level",
-#                 "investment_sector": "Healthcare",
-#                 "strategies": "Medium Risk,High Risk"  # Convertir la liste en chaîne
-#             },
-#             {
-#                 "name": "David Chen III",
-#                 "age": 42,
-#                 "country": "China",
-#                 "email": "david.chen.manager3@example.com",
-#                 "seniority": "Senior",
-#                 "investment_sector": "Technology",
-#                 "strategies": "High Risk,Medium Risk"  # Convertir la liste en chaîne
-#             }
-#         ]
-        
-#         manager_ids = []
-#         with BaseModel.get_db_connection() as db:
-#             for manager_data in managers:
-#                 manager = AssetManager(**manager_data)
-#                 manager_id = manager.save(db)
-#                 if manager_id is None:
-#                     print("❌ Impossible de créer un gestionnaire.")
-#                     return
-#                 manager_ids.append(manager_id)
-            
-#             # Création des clients
-#             clients = [
-#                 {
-#                     "name": "Alice Johnson Sr",
-#                     "age": 35,
-#                     "country": "USA",
-#                     "email": "alice.j.client1@example.com",
-#                     "risk_profile": "Low Risk",
-#                     "investment_amount": 100000.0,
-#                     "manager_id": manager_ids[0]
-#                 },
-#                 {
-#                     "name": "Pierre Martin Jr",
-#                     "age": 45,
-#                     "country": "France",
-#                     "email": "pierre.m.client2@example.com",
-#                     "risk_profile": "Medium Risk",
-#                     "investment_amount": 150000.0,
-#                     "manager_id": manager_ids[1]
-#                 },
-#                 {
-#                     "name": "Li Wei III",
-#                     "age": 40,
-#                     "country": "China",
-#                     "email": "li.w.client3@example.com",
-#                     "risk_profile": "High Risk",
-#                     "investment_amount": 200000.0,
-#                     "manager_id": manager_ids[2]
-#                 }
-#             ]
-            
-#             client_ids = []
-#             for client_data in clients:
-#                 client = Client(**client_data)
-#                 client_id = client.save(db)
-#                 if client_id is None:
-#                     print("❌ Impossible de créer un client.")
-#                     return
-#                 client_ids.append(client_id)
-            
-#             # Création des portefeuilles
-#             portfolios = [
-#                 {
-#                     "manager_id": manager_ids[0],
-#                     "client_id": client_ids[0],
-#                     "strategy": "Low Risk",
-#                     "investment_sector": "Technology",
-#                     "size": 5,
-#                     "value": 100000.0,
-#                     "assets": ["AAPL", "MSFT"]
-#                 },
-#                 {
-#                     "manager_id": manager_ids[1],
-#                     "client_id": client_ids[1],
-#                     "strategy": "Medium Risk",
-#                     "investment_sector": "Healthcare",
-#                     "size": 4,
-#                     "value": 150000.0,
-#                     "assets": ["JNJ", "PFE"]
-#                 },
-#                 {
-#                     "manager_id": manager_ids[2],
-#                     "client_id": client_ids[2],
-#                     "strategy": "High Risk",
-#                     "investment_sector": "Technology",
-#                     "size": 6,
-#                     "value": 200000.0,
-#                     "assets": ["BABA", "JD"]
-#                 }
-#             ]
-            
-#             portfolio_ids = []
-#             for portfolio_data in portfolios:
-#                 portfolio = Portfolio(**portfolio_data)
-#                 portfolio_id = portfolio.save(db)
-#                 if portfolio_id is None:
-#                     print("❌ Impossible de créer un portefeuille.")
-#                     return
-#                 portfolio_ids.append(portfolio_id)
-            
-#             # Mise à jour des IDs de portefeuille pour les clients
-#             cursor = db.cursor()
-#             for client_id, portfolio_id in zip(client_ids, portfolio_ids):
-#                 cursor.execute("""
-#                     UPDATE Clients
-#                     SET portfolio_id = ?
-#                     WHERE id = ?
-#                 """, (portfolio_id, client_id))
-            
-#             db.commit()
-#             print("✅ Base de données initialisée avec succès.")
-            
-#     except Exception as e:
-#         print(f"❌ Une erreur inattendue s'est produite : {str(e)}")
-#         return
-
-# if __name__ == "__main__":
-#     # Création de la base de données et des données d'exemple
-#     create_sample_data()
-    
-#     # Téléchargement des données boursières
-#     print("\n📥 Téléchargement des données boursières...")
-#     tickers = ["AAPL", "MSFT", "JNJ", "PFE", "BABA", "JD"]
-#     data = download_stock_data(tickers)
-#     if data is not None:
-#         save_stock_data(data)
-#     else:
-#         print("⚠️ Aucune donnée boursière n'a pu être téléchargée.")

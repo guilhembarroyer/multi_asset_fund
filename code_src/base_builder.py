@@ -3,57 +3,8 @@ import sqlite3
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 import time
+import pandas as pd
 
-
-def get_db_path() -> str:
-    """
-    Retourne le chemin de la base de données dans le dossier parent.
-    
-    Returns:
-        str: Chemin absolu vers la base de données
-    """
-    # Obtenir le chemin du dossier parent (un niveau au-dessus du dossier code_scr)
-    parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(parent_dir, "fund_database.db")
-
-
-def get_eligible_managers(db: sqlite3.Connection, client_country: str, client_seniority: str, client_strategie: str) -> List[Dict[str, Any]]:
-    """
-    Récupère les managers compatibles depuis la base de données selon les critères.
-    
-    Args:
-        db: Connexion à la base de données
-        client_country: Pays du client
-        client_seniority: Niveau de séniorité du client
-        client_strategie: Stratégie d'investissement du client
-        
-    Returns:
-        List[Dict[str, Any]]: Liste des managers éligibles
-    """
-    cursor = db.cursor()
-    cursor.execute("""
-        SELECT m.id, m.name, m.age, m.country, m.email, m.seniority, m.investment_sector
-        FROM Managers m
-        INNER JOIN Manager_Strategies ms ON m.id = ms.manager_id
-        WHERE m.country = ? AND m.seniority = ? AND ms.strategy LIKE ?
-    """, (client_country, client_seniority, f"%{client_strategie}%"))
-    
-    rows = cursor.fetchall()
-    eligible_managers = []
-    
-    for row in rows:
-        manager = {
-            'id': row[0],
-            'name': row[1],
-            'age': row[2],
-            'country': row[3],
-            'email': row[4],
-            'seniority': row[5],
-            'investment_sector': row[6]
-        }
-        eligible_managers.append(manager)
-    
-    return eligible_managers
 
 
 class BaseModel:
@@ -124,10 +75,10 @@ class BaseModel:
                     investment_sector TEXT NOT NULL,
                     size INTEGER NOT NULL,
                     value REAL NOT NULL,
+                    cash_value REAL NOT NULL,
                     FOREIGN KEY (manager_id) REFERENCES Managers (id),
                     FOREIGN KEY (client_id) REFERENCES Clients (id)
                 );
-
 
                 CREATE TABLE IF NOT EXISTS Products (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -143,7 +94,20 @@ class BaseModel:
                     product_id INTEGER,
                     quantity INTEGER NOT NULL,
                     weight REAL NOT NULL DEFAULT 0.0,
+                    value REAL NOT NULL DEFAULT 0.0,
                     PRIMARY KEY (portfolio_id, product_id),
+                    FOREIGN KEY (portfolio_id) REFERENCES Portfolios (id),
+                    FOREIGN KEY (product_id) REFERENCES Products (id)
+                );
+
+                CREATE TABLE IF NOT EXISTS Deals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    portfolio_id INTEGER NOT NULL,
+                    product_id INTEGER NOT NULL,
+                    date TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    quantity INTEGER NOT NULL,
+                    price REAL NOT NULL,
                     FOREIGN KEY (portfolio_id) REFERENCES Portfolios (id),
                     FOREIGN KEY (product_id) REFERENCES Products (id)
                 );
@@ -171,6 +135,49 @@ class BaseModel:
         """
         conn = sqlite3.connect(get_db_path(), timeout=10)  # 30 secondes de timeout
         return conn
+
+    @classmethod
+    def reinitialize_portfolio(cls, db: sqlite3.Connection, portfolio_id: int) -> None:
+        """
+        Réinitialise les positions d'un portefeuille à 0 et remet sa valeur à sa valeur initiale.
+        
+        Args:
+            db: Connexion à la base de données
+            portfolio_id: ID du portefeuille à réinitialiser
+        """
+        cursor = db.cursor()
+        
+        # Récupérer l'investissement initial du client
+        cursor.execute("""
+            SELECT c.investment_amount
+            FROM Clients c
+            JOIN Portfolios p ON c.portfolio_id = p.id
+            WHERE p.id = ?
+        """, (portfolio_id,))
+        
+        result = cursor.fetchone()
+        if not result:
+            raise ValueError(f"Portefeuille {portfolio_id} non trouvé")
+            
+        initial_value = result[0]
+        
+        # Réinitialiser les positions à 0
+        cursor.execute("""
+            UPDATE Portfolios_Products
+            SET quantity = 0,
+                weight = 0.0,
+                value = 0.0
+            WHERE portfolio_id = ?
+        """, (portfolio_id,))
+        
+        # Mettre à jour la valeur du portefeuille
+        cursor.execute("""
+            UPDATE Portfolios
+            SET value = ?, cash_value = ?
+            WHERE id = ?
+        """, (initial_value, initial_value, portfolio_id))
+        
+        db.commit()
 
 
 
@@ -336,6 +343,7 @@ class Portfolio(BaseModel):
         self.investment_sector = investment_sector
         self.size = size
         self.value = value
+        self.cash_value = value
         self.assets = assets or []
 
     def save(self, db: sqlite3.Connection) -> int:
@@ -350,10 +358,10 @@ class Portfolio(BaseModel):
         """
         cursor = db.cursor()
         cursor.execute("""
-            INSERT INTO Portfolios (manager_id, client_id, strategy, investment_sector, size, value) 
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO Portfolios (manager_id, client_id, strategy, investment_sector, size, value, cash_value) 
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (self.manager_id, self.client_id, self.strategy, self.investment_sector,
-              self.size, self.value))
+              self.size, self.value, self.cash_value))
         
         portfolio_id = cursor.lastrowid
 
@@ -366,12 +374,42 @@ class Portfolio(BaseModel):
             product_id = cursor.fetchone()[0]
             
             cursor.execute("""
-                INSERT INTO Portfolios_Products (portfolio_id, product_id, quantity, weight)
-                VALUES (?, ?, ?, ?)
-            """, (portfolio_id, product_id, 1, 0.0))
+                INSERT INTO Portfolios_Products (portfolio_id, product_id, quantity, weight, value)
+                VALUES (?, ?, ?, ?, ?)
+            """, (portfolio_id, product_id, 0, 0.0, 0.0))
 
         db.commit()
         return portfolio_id 
+    
+    @classmethod
+    def update_positions(cls, db: sqlite3.Connection, portfolio_id: int, positions: List[Dict[str, Any]], cash: Dict[str, Any]) -> float:
+        """
+        Met à jour les positions du portefeuille et sa valeur totale.
+        
+        """
+        cursor = db.cursor()
+
+        for position in positions:
+            cursor.execute("""
+                UPDATE Portfolios_Products
+                SET quantity = ?,
+                    weight = ?,
+                    value = ?
+                WHERE portfolio_id = ? AND product_id = ?
+            """, (position['quantity'], position['weight'], position['value'], portfolio_id, position['product_id']))
+        
+        total_value = sum(position['value'] for position in positions) + cash['value']
+        print("total value", total_value, "cash value in update_positions", cash['value'])
+        cursor.execute("""
+            UPDATE Portfolios
+            SET value = ?, cash_value = ?
+            WHERE id = ?
+        """, (total_value, cash['value'], portfolio_id))
+        
+        db.commit()
+        return total_value
+        
+        
 
     @classmethod
     def get_by_id(cls, portfolio_id: int) -> Optional['Portfolio']:
@@ -422,56 +460,60 @@ class Product(BaseModel):
         self.company_name = company_name
         self.stock_exchange = stock_exchange
 
-    def save(self, db: sqlite3.Connection) -> int:
+    def save(self, db: sqlite3.Connection) -> Optional[int]:
         """
-        Sauvegarde le produit dans la base de données.
+        Sauvegarde l'actif dans la base de données.
         
         Args:
             db: Connexion à la base de données
             
         Returns:
-            int: ID du produit créé
+            Optional[int]: ID de l'actif ou None en cas d'erreur
         """
         try:
             cursor = db.cursor()
             
-            # Démarrer une transaction
-            db.execute("BEGIN IMMEDIATE")
-            
-            # Insérer le produit
+            # Insérer l'actif dans la table Products
             cursor.execute("""
                 INSERT INTO Products (ticker, sector, market_cap, company_name, stock_exchange)
                 VALUES (?, ?, ?, ?, ?)
-            """, (self.ticker, self.sector, self.market_cap, self.company_name, self.stock_exchange))
+            """, (
+                self.ticker,
+                self.sector,
+                self.market_cap,
+                self.company_name,
+                self.stock_exchange
+            ))
             
             product_id = cursor.lastrowid
             
-            # Créer une table spécifique pour ce produit
-            table_name = f"Returns_{self.ticker}"
+            # Créer la table Returns_{ticker} si elle n'existe pas
             cursor.execute(f"""
-                CREATE TABLE IF NOT EXISTS {table_name} (
+                CREATE TABLE IF NOT EXISTS Returns_{self.ticker} (
                     date TEXT PRIMARY KEY,
-                    returns REAL NOT NULL
+                    price REAL,
+                    returns REAL
                 )
             """)
             
-            # Insérer les rendements dans la table spécifique
-            for date, value in self.returns.items():
+            # Insérer les rendements dans la table Returns_{ticker}
+            for _, row in self.returns.iterrows():
                 cursor.execute(f"""
-                    INSERT OR REPLACE INTO {table_name} (date, returns)
-                    VALUES (?, ?)
-                """, (date, value))
-                
-        
+                    INSERT OR REPLACE INTO Returns_{self.ticker} (date, price, returns)
+                    VALUES (?, ?, ?)
+                """, (
+                    row['date'].strftime('%Y-%m-%d'),
+                    row['price'],
+                    row['returns']
+                ))
             
-            # Valider la transaction
             db.commit()
             return product_id
             
-        except sqlite3.OperationalError as e:
-            # En cas d'erreur, annuler la transaction
+        except Exception as e:
+            print(f"❌ Erreur lors de la sauvegarde de {self.ticker}: {str(e)}")
             db.rollback()
-            raise e
+            return None
 
     @classmethod
     def exists(cls, ticker: str) -> bool:
@@ -545,193 +587,172 @@ def get_next_id(table: str, db: sqlite3.Connection) -> int:
     return 1 if max_id is None else max_id + 1
 
 
-class PortfolioProduct(BaseModel):
-    """Classe représentant la relation entre un portefeuille et un produit."""
+def get_db_path() -> str:
+    """
+    Retourne le chemin de la base de données dans le dossier parent.
     
-    def __init__(self, portfolio_id: int, product_id: int, quantity: int, weight: float = 0.0):
-        self.portfolio_id = portfolio_id
-        self.product_id = product_id
-        self.quantity = quantity
-        self.weight = weight
+    Returns:
+        str: Chemin absolu vers la base de données
+    """
+    # Obtenir le chemin du dossier parent (un niveau au-dessus du dossier code_scr)
+    parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(parent_dir, "fund_database.db")
 
-    def save(self, db: sqlite3.Connection) -> None:
-        """
-        Sauvegarde la relation portefeuille-produit dans la base de données.
-        
-        Args:
-            db: Connexion à la base de données
-        """
-        cursor = db.cursor()
-        cursor.execute("""
-            INSERT OR REPLACE INTO Portfolios_Products (portfolio_id, product_id, quantity, weight)
-            VALUES (?, ?, ?, ?)
-        """, (self.portfolio_id, self.product_id, self.quantity, self.weight))
-        db.commit()
 
-    def update_weight(self, db: sqlite3.Connection, new_weight: float) -> None:
-        """
-        Met à jour le poids d'un produit dans un portefeuille.
+def get_eligible_managers(db: sqlite3.Connection, client_country: str, client_seniority: str, client_strategie: str) -> List[Dict[str, Any]]:
+    """
+    Récupère les managers compatibles depuis la base de données selon les critères.
+    
+    Args:
+        db: Connexion à la base de données
+        client_country: Pays du client
+        client_seniority: Niveau de séniorité du client
+        client_strategie: Stratégie d'investissement du client
         
-        Args:
-            db: Connexion à la base de données
-            new_weight: Nouveau poids à appliquer
-        """
-        cursor = db.cursor()
-        cursor.execute("""
-            UPDATE Portfolios_Products
-            SET weight = ?
-            WHERE portfolio_id = ? AND product_id = ?
-        """, (new_weight, self.portfolio_id, self.product_id))
-        db.commit()
-        self.weight = new_weight
-
-    @classmethod
-    def get_by_portfolio_id(cls, portfolio_id: int, db: sqlite3.Connection) -> List['PortfolioProduct']:
-        """
-        Récupère toutes les relations portefeuille-produit pour un portefeuille donné.
-        
-        Args:
-            portfolio_id: ID du portefeuille
-            db: Connexion à la base de données
-            
-        Returns:
-            List[PortfolioProduct]: Liste des relations portefeuille-produit
-        """
-        cursor = db.cursor()
-        cursor.execute("""
-            SELECT portfolio_id, product_id, quantity, weight
-            FROM Portfolios_Products
-            WHERE portfolio_id = ?
-        """, (portfolio_id,))
-        
-        return [cls(row[0], row[1], row[2], row[3]) for row in cursor.fetchall()]
+    Returns:
+        List[Dict[str, Any]]: Liste des managers éligibles
+    """
+    cursor = db.cursor()
+    cursor.execute("""
+        SELECT m.id, m.name, m.age, m.country, m.email, m.seniority, m.investment_sector
+        FROM Managers m
+        INNER JOIN Manager_Strategies ms ON m.id = ms.manager_id
+        WHERE m.country = ? AND m.seniority = ? AND ms.strategy LIKE ?
+    """, (client_country, client_seniority, f"%{client_strategie}%"))
+    
+    rows = cursor.fetchall()
+    eligible_managers = []
+    
+    for row in rows:
+        manager = {
+            'id': row[0],
+            'name': row[1],
+            'age': row[2],
+            'country': row[3],
+            'email': row[4],
+            'seniority': row[5],
+            'investment_sector': row[6]
+        }
+        eligible_managers.append(manager)
+    
+    return eligible_managers
 
 
 class Deal(BaseModel):
-    """Classe représentant une transaction (deal) dans le fonds."""
+    """Classe représentant une transaction sur un portefeuille."""
     
-    def __init__(self, portfolio_id: int, manager_id: int, date: str, ticker: str,
-                 action: str, quantity: int, price: float, total_value: float,
-                 portfolio_weight: float, manager_weight: float, fund_weight: float):
-        self.portfolio_id = portfolio_id
-        self.manager_id = manager_id
-        self.date = date
-        self.ticker = ticker
-        self.action = action  # "BUY" ou "SELL"
-        self.quantity = quantity
-        self.price = price
-        self.total_value = total_value
-        self.portfolio_weight = portfolio_weight
-        self.manager_weight = manager_weight
-        self.fund_weight = fund_weight
-
-    def save(self, db: sqlite3.Connection) -> None:
+    def __init__(self, portfolio_id: int, product_id: int, date: str, 
+                 action: str, quantity: int, price: float):
         """
-        Sauvegarde le deal dans les différentes tables.
+        Initialise une nouvelle transaction.
         
         Args:
+            portfolio_id: ID du portefeuille concerné
+            product_id: ID du produit concerné
+            date: Date d'exécution de la transaction
+            action: Type d'action (BUY/SELL)
+            quantity: Quantité (positive pour achat, négative pour vente)
+            price: Prix d'exécution
+        """
+        self.portfolio_id = portfolio_id
+        self.product_id = product_id
+        self.date = date
+        self.action = action
+        self.quantity = quantity
+        self.price = price
+    
+    def save(self, db: sqlite3.Connection) -> int:
+        """
+        Sauvegarde la transaction dans la base de données.
+        
+        Args:
+            db: Connexion à la base de données
+            
+        Returns:
+            int: ID de la transaction créée
+        """
+        cursor = db.cursor()
+        cursor.execute("""
+            INSERT INTO Deals (portfolio_id, product_id, date, action, quantity, price)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            self.portfolio_id,
+            self.product_id,
+            self.date,
+            self.action,
+            self.quantity,
+            self.price
+        ))
+        
+        deal_id = cursor.lastrowid
+        db.commit()
+        return deal_id
+    
+    @classmethod
+    def save_multiple(cls, deals: List['Deal'], db: sqlite3.Connection) -> None:
+        """
+        Sauvegarde plusieurs deals dans la base de données.
+        
+        Args:
+            deals: Liste des deals à sauvegarder
             db: Connexion à la base de données
         """
         cursor = db.cursor()
         
-        # Sauvegarder dans Deals_portfolio
-        cursor.execute("""
-            INSERT INTO Deals_portfolio 
-            (portfolio_id, date, ticker, action, quantity, price, total_value, 
-             portfolio_weight, manager_weight, fund_weight)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (self.portfolio_id, self.date, self.ticker, self.action, self.quantity,
-              self.price, self.total_value, self.portfolio_weight, self.manager_weight,
-              self.fund_weight))
-        
-        # Sauvegarder dans Deals_manager
-        cursor.execute("""
-            INSERT INTO Deals_manager 
-            (manager_id, date, ticker, action, quantity, price, total_value, 
-             portfolio_weight, manager_weight, fund_weight)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (self.manager_id, self.date, self.ticker, self.action, self.quantity,
-              self.price, self.total_value, self.portfolio_weight, self.manager_weight,
-              self.fund_weight))
-        
-        # Sauvegarder dans Deals_fund
-        cursor.execute("""
-            INSERT INTO Deals_fund 
-            (date, ticker, action, quantity, price, total_value, 
-             portfolio_weight, manager_weight, fund_weight)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (self.date, self.ticker, self.action, self.quantity, self.price,
-              self.total_value, self.portfolio_weight, self.manager_weight,
-              self.fund_weight))
+        # Vérifier les deals existants pour éviter les doublons
+        for deal in deals:
+            cursor.execute("""
+                SELECT COUNT(*)
+                FROM Deals
+                WHERE portfolio_id = ?
+                AND product_id = ?
+                AND date = ?
+                AND action = ?
+                AND quantity = ?
+                AND price = ?
+            """, (deal.portfolio_id, deal.product_id, deal.date, 
+                  deal.action, deal.quantity, deal.price))
+            
+            if cursor.fetchone()[0] == 0:  # Si le deal n'existe pas déjà
+                cursor.execute("""
+                    INSERT INTO Deals (portfolio_id, product_id, date, action, quantity, price)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (deal.portfolio_id, deal.product_id, deal.date, 
+                      deal.action, deal.quantity, deal.price))
         
         db.commit()
-
+    
     @classmethod
-    def get_by_portfolio_id(cls, portfolio_id: int, db: sqlite3.Connection) -> List['Deal']:
+    def get_portfolio_deals(cls, portfolio_id: int, db: sqlite3.Connection) -> List[Dict[str, Any]]:
         """
-        Récupère tous les deals d'un portefeuille.
+        Récupère toutes les transactions d'un portefeuille.
         
         Args:
             portfolio_id: ID du portefeuille
             db: Connexion à la base de données
             
         Returns:
-            List[Deal]: Liste des deals du portefeuille
+            List[Dict[str, Any]]: Liste des transactions
         """
         cursor = db.cursor()
         cursor.execute("""
-            SELECT portfolio_id, manager_id, date, ticker, action, quantity, price,
-                   total_value, portfolio_weight, manager_weight, fund_weight
-            FROM Deals_portfolio
-            WHERE portfolio_id = ?
-            ORDER BY date
+            SELECT d.id, d.date, d.action, d.quantity, d.price, p.ticker
+            FROM Deals d
+            JOIN Products p ON d.product_id = p.id
+            WHERE d.portfolio_id = ?
+            ORDER BY d.date
         """, (portfolio_id,))
         
-        return [cls(row[0], row[1], row[2], row[3], row[4], row[5], row[6],
-                   row[7], row[8], row[9], row[10]) for row in cursor.fetchall()]
+        deals = []
+        for row in cursor.fetchall():
+            deals.append({
+                'id': row[0],
+                'date': row[1],
+                'action': row[2],
+                'quantity': row[3],
+                'price': row[4],
+                'ticker': row[5]
+            })
+        
+        return deals
 
-    @classmethod
-    def get_by_manager_id(cls, manager_id: int, db: sqlite3.Connection) -> List['Deal']:
-        """
-        Récupère tous les deals d'un manager.
-        
-        Args:
-            manager_id: ID du manager
-            db: Connexion à la base de données
-            
-        Returns:
-            List[Deal]: Liste des deals du manager
-        """
-        cursor = db.cursor()
-        cursor.execute("""
-            SELECT portfolio_id, manager_id, date, ticker, action, quantity, price,
-                   total_value, portfolio_weight, manager_weight, fund_weight
-            FROM Deals_manager
-            WHERE manager_id = ?
-            ORDER BY date
-        """, (manager_id,))
-        
-        return [cls(row[0], row[1], row[2], row[3], row[4], row[5], row[6],
-                   row[7], row[8], row[9], row[10]) for row in cursor.fetchall()]
-
-    @classmethod
-    def get_all_fund_deals(cls, db: sqlite3.Connection) -> List['Deal']:
-        """
-        Récupère tous les deals du fonds.
-        
-        Args:
-            db: Connexion à la base de données
-            
-        Returns:
-            List[Deal]: Liste de tous les deals du fonds
-        """
-        cursor = db.cursor()
-        cursor.execute("""
-            SELECT portfolio_id, manager_id, date, ticker, action, quantity, price,
-                   total_value, portfolio_weight, manager_weight, fund_weight
-            FROM Deals_fund
-            ORDER BY date
-        """)
-        
-        return [cls(row[0], row[1], row[2], row[3], row[4], row[5], row[6],
-                   row[7], row[8], row[9], row[10]) for row in cursor.fetchall()]

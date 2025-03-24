@@ -1,213 +1,463 @@
+from typing import Dict, List, Tuple, Any
 import sqlite3
 from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Optional, Tuple
-from enum import Enum
+from base_builder import BaseModel, Deal
+from scipy.optimize import minimize
+from base_builder import Portfolio
 
-from base_builder import (
-    BaseModel, Portfolio, Product, PortfolioProduct, Deal,
-    get_db_path
-)
 
-class RiskProfile(Enum):
-    LOW_RISK = "Low Risk"
-    MID_RISK = "Medium Risk"
-    HIGH_RISK = "High Risk"
+class Simulation:
+    """Classe pour simuler la gestion active d'un portefeuille."""
+    
+    def __init__(self, db: sqlite3.Connection, portfolio_id: int, strategy: str, registration_date: str):
+        """
+        Initialise la simulation.
+        
+        Args:
+            db: Connexion à la base de données
+            portfolio_id: ID du portefeuille à simuler
+            strategy: Stratégie d'investissement à utiliser
+            registration_date: Date d'enregistrement du client
+        """
+        self.db = db
+        self.cursor = db.cursor()
+        self.portfolio_id = portfolio_id
+        self.strategy = strategy
+        self.registration_date = datetime.strptime(registration_date, '%Y-%m-%d')
+        
+        # Récupérer les informations du portefeuille
+        self.cursor.execute("""
+            SELECT p.value, p.size
+            FROM Portfolios p
+            WHERE p.id = ?
+        """, (portfolio_id,))
+        portfolio_info = self.cursor.fetchone()
+        if portfolio_info:
+            self.portfolio_value = portfolio_info[0]
+            self.portfolio_size = portfolio_info[1]
+        else:
+            raise ValueError(f"Portefeuille {portfolio_id} non trouvé")
+        
+        self.cursor.execute("""
+            UPDATE Portfolios_Products
+            SET quantity = ?,
+                weight = ?,
+                value = ?
+            WHERE portfolio_id = ?
+        """, (0,0, 0, portfolio_id))
+    
+        
+        
 
-class StrategyManager:
-    def __init__(self):
-        self.db = BaseModel.get_db_connection()
-        self.cursor = self.db.cursor()
-        
-    def create_deals_tables(self) -> None:
-        """Crée les tables nécessaires pour stocker les deals."""
-        self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS Deals_portfolio (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                portfolio_id INTEGER,
-                date TEXT,
-                ticker TEXT,
-                action TEXT,
-                quantity INTEGER,
-                price REAL,
-                total_value REAL,
-                portfolio_weight REAL,
-                manager_weight REAL,
-                fund_weight REAL,
-                FOREIGN KEY (portfolio_id) REFERENCES Portfolios(id)
-            )
-        """)
-        
-        self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS Deals_manager (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                manager_id INTEGER,
-                date TEXT,
-                ticker TEXT,
-                action TEXT,
-                quantity INTEGER,
-                price REAL,
-                total_value REAL,
-                portfolio_weight REAL,
-                manager_weight REAL,
-                fund_weight REAL,
-                FOREIGN KEY (manager_id) REFERENCES AssetManagers(id)
-            )
-        """)
-        
-        self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS Deals_fund (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                date TEXT,
-                ticker TEXT,
-                action TEXT,
-                quantity INTEGER,
-                price REAL,
-                total_value REAL,
-                portfolio_weight REAL,
-                manager_weight REAL,
-                fund_weight REAL
-            )
-        """)
-        
-        self.db.commit()
+        # Compteur de deals par mois
+        self.deals_count = 0
+        self.current_month = None
     
-    def get_portfolio_data(self, portfolio_id: int) -> Dict:
-        """Récupère les données d'un portefeuille."""
-        portfolio = Portfolio.get_by_id(portfolio_id, self.db)
-        if not portfolio:
-            raise ValueError(f"Portfolio {portfolio_id} not found")
+    def execute_strategy(self, current_date: datetime) -> List[Dict[str, Any]]:
+        """
+        Exécute la stratégie d'investissement pour une date donnée.
         
-        return {
-            'id': portfolio.id,
-            'manager_id': portfolio.manager_id,
-            'client_id': portfolio.client_id,
-            'strategy': portfolio.strategy,
-            'investment_sector': portfolio.investment_sector,
-            'size': portfolio.size,
-            'value': portfolio.value
-        }
-    
-    def get_portfolio_holdings(self, portfolio_id: int) -> List[Dict]:
-        """Récupère les positions actuelles d'un portefeuille."""
-        portfolio_products = PortfolioProduct.get_by_portfolio_id(portfolio_id, self.db)
-        holdings = []
-        
-        for pp in portfolio_products:
-            product = Product.get_by_id(pp.product_id, self.db)
-            if product:
-                holdings.append({
-                    'ticker': product.ticker,
-                    'quantity': pp.quantity,
-                    'weight': pp.weight
-                })
-        
-        return holdings
-    
-    def get_weekly_returns(self, ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
-        """Récupère les rendements hebdomadaires d'un actif."""
-        self.cursor.execute("""
-            SELECT date, returns_CVX as returns
-            FROM Returns
-            WHERE date BETWEEN ? AND ?
-            ORDER BY date
-        """, (start_date, end_date))
-        return pd.DataFrame(self.cursor.fetchall(), columns=['date', 'returns'])
-    
-    def calculate_portfolio_volatility(self, portfolio_id: int, start_date: str, end_date: str) -> float:
-        """Calcule la volatilité annualisée d'un portefeuille."""
-        holdings = self.get_portfolio_holdings(portfolio_id)
-        returns_data = []
-        
-        for holding in holdings:
-            returns = self.get_weekly_returns(holding['ticker'], start_date, end_date)
-            returns_data.append(returns['returns'] * holding['weight'])
-        
-        portfolio_returns = pd.concat(returns_data, axis=1).sum(axis=1)
-        weekly_vol = portfolio_returns.std()
-        return weekly_vol * np.sqrt(52)  # Annualisation
-    
-    def execute_strategy(self, portfolio_id: int, date: str) -> List[Deal]:
-        """Exécute la stratégie appropriée pour un portefeuille."""
-        portfolio_data = self.get_portfolio_data(portfolio_id)
-        risk_profile = RiskProfile(portfolio_data['strategy'])
-        
-        if risk_profile == RiskProfile.LOW_RISK:
-            return self._execute_low_risk_strategy(portfolio_id, date)
-        elif risk_profile == RiskProfile.MID_RISK:
-            return self._execute_mid_risk_strategy(portfolio_id, date)
-        else:  # HIGH_RISK
-            return self._execute_high_risk_strategy(portfolio_id, date)
-    
-    def _execute_low_risk_strategy(self, portfolio_id: int, date: str) -> List[Deal]:
-        """Exécute la stratégie Low Risk (volatilité cible de 10%)."""
-        deals = []
-        holdings = self.get_portfolio_holdings(portfolio_id)
-        current_vol = self.calculate_portfolio_volatility(portfolio_id, 
-                                                        (datetime.strptime(date, '%Y-%m-%d') - timedelta(days=365)).strftime('%Y-%m-%d'),
-                                                        date)
-        
-        if current_vol > 0.10:  # Si la volatilité est supérieure à 10%
-            # Réduire les positions les plus volatiles
-            for holding in holdings:
-                if holding['weight'] > 0.1:  # Si l'actif représente plus de 10% du portefeuille
-                    deals.append(self._create_deal(portfolio_id, holding['ticker'], "SELL", 
-                                                 int(holding['quantity'] * 0.2)))  # Vendre 20% de la position
-        
+        Args:
+            current_date: Date d'analyse (vendredi)
+            
+        Returns:
+            List[Dict[str, Any]]: Liste des deals à exécuter
+        """
+        # Mettre à jour l'historique des rendements
+        current_returns = self.get_asset_returns(current_date)
+
+        # Mettre à jour le compteur de deals mensuel
+        current_month = current_date.month
+        if self.current_month != current_month:
+            self.deals_count = 0
+            self.current_month = current_month
+            print("new month", current_month)
+
+        # Récupérer les positions actuelles
+        positions, cash = self.get_portfolio_positions(self.portfolio_id, current_date)
+
+        print("old positions", positions)
+        print("cash", cash)
+        print("current_date", current_date)
+        # Calculer les décisions d'investissement selon la stratégie
+        deals,cash,positions = self._calculate_deals(positions, cash, current_returns)
+        print("deals", deals)
+        print("new positions", positions)
+        print("new cash", cash)
+        # Enregistrer les deals dans la base de données
+        if deals:
+            self._save_deals_positions(deals, positions, cash, current_date)
+            
+
+        print("deals count", self.deals_count)
         return deals
     
-    def _execute_mid_risk_strategy(self, portfolio_id: int, date: str) -> List[Deal]:
-        """Exécute la stratégie Mid Risk (maximum 2 deals par mois)."""
-        # Vérifier le nombre de deals du mois
+    def get_asset_returns(self, date: datetime) -> pd.DataFrame:
+        """Get returns for each asset as a DataFrame with the last 12 returns"""
+        # Récupérer tous les tickers du portefeuille
         self.cursor.execute("""
-            SELECT COUNT(*) FROM Deals_portfolio
-            WHERE portfolio_id = ? AND date LIKE ?
-        """, (portfolio_id, f"{date[:7]}%"))
-        monthly_deals = self.cursor.fetchone()[0]
+            SELECT DISTINCT p.ticker
+            FROM Portfolios_Products pp
+            JOIN Products p ON pp.product_id = p.id
+            WHERE pp.portfolio_id = ?
+        """, (self.portfolio_id,))
         
-        if monthly_deals >= 2:
-            return []  # Ne pas faire de deals si on a déjà atteint la limite
+        tickers = [row[0] for row in self.cursor.fetchall()]
         
-        # Logique de trading (à implémenter selon vos critères)
-        return []
+        # Créer un dictionnaire pour stocker les rendements par ticker
+        returns_dict = {}
+        
+        # Récupérer les rendements pour chaque ticker
+        for ticker in tickers:
+            self.cursor.execute(f"""
+                SELECT date, returns
+                FROM Returns_{ticker}
+                WHERE date <= ?
+                ORDER BY date DESC
+                LIMIT 12
+            """, (date.strftime("%Y-%m-%d"),))
+            
+            results = self.cursor.fetchall()
+            if results:
+                # Créer une liste de rendements dans l'ordre chronologique
+                returns_list = [row[1] for row in reversed(results)]
+                returns_dict[ticker] = returns_list
+        
+        # Créer la DataFrame
+        returns_df = pd.DataFrame(returns_dict)
+        
+        return returns_df
     
-    def _execute_high_risk_strategy(self, portfolio_id: int, date: str) -> List[Deal]:
-        """Exécute la stratégie High Risk (maximisation du rendement)."""
-        # Logique de trading agressive (à implémenter selon vos critères)
-        return []
+    def get_portfolio_positions(self, portfolio_id, current_date):
+        """
+        Récupère les positions actuelles du portefeuille depuis la table Portfolios_Products.
+        """
+        cursor = self.db.cursor()
+        
+        # Récupérer les positions depuis Portfolios_Products
+        cursor.execute("""
+            SELECT p.ticker, pp.quantity, pp.weight, p.id as product_id
+            FROM Portfolios_Products pp
+            JOIN Products p ON pp.product_id = p.id
+            WHERE pp.portfolio_id = ?
+        """, (portfolio_id,))
+        
+        positions = []
+        total_value = 0
+
+        for row in cursor.fetchall():
+
+            ticker, quantity, weight, product_id = row
+            
+            # Récupérer le dernier prix connu
+            cursor.execute(f"""
+                SELECT price
+                FROM Returns_{ticker}
+                WHERE date <= ?
+                ORDER BY date DESC
+                LIMIT 1
+            """, (current_date.strftime('%Y-%m-%d'),))
+            
+            price = cursor.fetchone()
+            if price is None:
+                continue
+            
+            position_value = quantity * price[0]
+            total_value += position_value
+            
+
+            positions.append({
+                'ticker': ticker,
+                'quantity': quantity,
+                'weight': weight,
+                'price': price[0],
+                'value': position_value,
+                'product_id': product_id
+            })
+
+        cursor.execute("""
+                SELECT cash_value
+                FROM Portfolios
+                WHERE id = ?
+            """, (self.portfolio_id,))
+        cash_value = cursor.fetchone()[0]
+            
+        print("cash value in get_portfolio_positions", cash_value)
+        
+        cash = {
+            'ticker': 'CASH',
+            'weight': cash_value/self.portfolio_value,
+            'price': 1,
+            'value': cash_value} 
+        
+        print("positions in get_portfolio_positions", positions)
+        print("total value in get_portfolio_positions", total_value+cash_value)
+
+        return positions, cash
+
+
     
-    def _create_deal(self, portfolio_id: int, ticker: str, action: str, quantity: int) -> Deal:
-        """Crée un objet Deal avec les informations nécessaires."""
-        # Récupérer le prix actuel
-        self.cursor.execute("""
-            SELECT returns FROM Returns
-            WHERE ticker = ? AND date = (SELECT MAX(date) FROM Returns)
-        """, (ticker,))
-        price = self.cursor.fetchone()[0]
+    def _calculate_deals(self, positions: List[Dict[str, Any]], cash: Dict[str, Any], current_returns: pd.DataFrame) -> List[Dict[str, Any]]:
+        """
+        Calcule les deals à effectuer selon la stratégie.
         
-        # Calculer les poids
-        portfolio_data = self.get_portfolio_data(portfolio_id)
-        total_value = quantity * price
+        Args:
+            positions: Positions actuelles du portefeuille
+            current_date: Date d'analyse
+            
+        Returns:
+            List[Dict[str, Any]]: Liste des deals à effectuer
+        """
+        deals = []
+
+        if self.strategy == "Low Risk":
+
+            # Calculer la volatilité actuelle du portefeuille
+            portfolio_returns = pd.Series(0.0, index=current_returns.index)
+            for position in positions:
+                if position['ticker'] in current_returns.columns:
+                    portfolio_returns += current_returns[position['ticker']] * position['weight']
+            
+            current_volatility = portfolio_returns.std() * np.sqrt(252)  # Volatilité annualisée
+            
+            print("current volatility", current_volatility)
+            
+            # Si la volatilité est supérieure à 10%, réduire les positions risquées
+            if current_volatility > 0.10:
+                print("current volatility is greater than 10%")
+                # Trier les actifs par volatilité décroissante
+                asset_volatilities = current_returns.std() * np.sqrt(252)
+                risky_assets = asset_volatilities[asset_volatilities > 0.10].index
+                
+                # Réduire les positions des actifs les plus risqués
+                for position in positions:
+                    if position['ticker'] in risky_assets:
+                        # Calculer la réduction nécessaire
+                        target_weight = round(position['weight'] * (0.10 / current_volatility), 2)
+                        weight_diff = target_weight - position['weight']
+                        print(position['ticker'], position['weight'], target_weight)
+                        
+                    quantity = int(weight_diff * self.portfolio_value / position['price'])
+                    if quantity < 0:
+                        deals.append({
+                            'product_id': position['product_id'],
+                            'action': 'SELL',
+                            'quantity': quantity,
+                            'price': position['price']
+                        })
+                        position['quantity'] += quantity
+                        position['weight'] += quantity * position['price']/self.portfolio_value
+                        position['value'] += quantity * position['price']
+                        cash['value']-= quantity * position['price']
+                        cash['weight']= cash['value']/self.portfolio_value
+
+            
+            # Si la volatilité est inférieure à 10%, augmenter les positions des actifs moins risqués
+            elif current_volatility < 0.10:
+                print("current volatility is less than 10%")
+                # Obtenir les poids optimaux
+                target_weights = self.optimize(current_returns)
+                
+                # Augmenter les positions des actifs les moins risqués
+                for position in positions:
+
+                    current_weight = position['weight']
+                    target_weight = round(target_weights.get(position['ticker'], 0), 2)
+                    weight_diff = target_weight - current_weight
+
+                    print(position['ticker'], current_weight, target_weight)
+                
+                    quantity = int((weight_diff) * self.portfolio_value / position['price'])
+
+                    if quantity !=0:
+                         
+                        action = 'BUY' if weight_diff > 0 else 'SELL'
+                        
+                        if (action == 'BUY' and quantity * position['price'] <= cash['value']) or (action == 'SELL' and quantity * position['price'] <= position['value']):
+                            print("deal", action, quantity, position['price'])
+            
+                            self.deals_count += 1
+                            deals.append({
+                            'product_id': position['product_id'],
+                            'action': action,
+                            'quantity': quantity,
+                            'price': position['price']
+                            })
+                            position['quantity'] += quantity
+                            position['weight'] += quantity * position['price']/self.portfolio_value
+                            position['value'] += quantity * position['price']
+                            cash['value']-= quantity * position['price']
+                            cash['weight']= cash['value']/self.portfolio_value
+                    
+        elif self.strategy == "Medium Risk": #Low Turnover
+            # Vérifier le nombre de deals du mois
+            print("deals count", self.deals_count)
+
+            if self.deals_count >= 2:  # Maximum 2 deals par mois
+                print("no deals")
+                return [], cash, positions
+            
+            else:
+          
+                # Obtenir les poids optimaux
+                target_weights = self.optimize(current_returns)
+
+                # Calculer les ajustements nécessaires
+                for position in positions:
+                    current_weight = position['weight']
+                    target_weight = round(target_weights.get(position['ticker'], 0), 2)
+                    print(position['ticker'], current_weight, target_weight)
+                    
+                    # Calculer la quantité à acheter/vendre
+                    weight_diff = target_weight - current_weight
+                    quantity = int((weight_diff) * self.portfolio_value / position['price'])
+                
+                    if quantity !=0 and self.deals_count <2:
+                         
+                        action = 'BUY' if weight_diff > 0 else 'SELL'
+                        
+                        if (action == 'BUY' and quantity * position['price'] <= cash['value']) or (action == 'SELL' and quantity * position['price'] <= positions['value']):
+                            self.deals_count += 1
+                            deals.append({
+                            'product_id': position['product_id'],
+                            'action': action,
+                            'quantity': quantity,
+                            'price': position['price']
+                            })
+                            position['quantity'] += quantity
+                            position['weight'] += quantity * position['price']/self.portfolio_value
+                            position['value'] += quantity * position['price']
+                            cash['value']-= quantity * position['price']
+                            cash['weight']= cash['value']/self.portfolio_value
+                        
+                
+    
+        elif self.strategy == "High Yield Equity Only":
+           pass
+
+        return deals, cash, positions
+    
+
+    
+    def optimize(self, returns_df: pd.DataFrame, risk_free_rate: float = 0.02, max_weight: float = 0.20) -> Dict[str, float]:
+        """
+        Optimize portfolio weights to maximize Sharpe ratio
         
-        return Deal(
-            portfolio_id=portfolio_id,
-            manager_id=portfolio_data['manager_id'],
-            date=datetime.now().strftime('%Y-%m-%d'),
-            ticker=ticker,
-            action=action,
-            quantity=quantity,
-            price=price,
-            total_value=total_value,
-            portfolio_weight=0.0,  # À calculer
-            manager_weight=0.0,    # À calculer
-            fund_weight=0.0        # À calculer
+        Args:
+            returns_df: DataFrame with historical returns (one column per asset)
+            risk_free_rate: Annual risk-free rate (default: 2%)
+            max_weight: Maximum weight per asset (default: 20%)
+            
+        Returns:
+            Dictionary mapping asset tickers to their optimal weights
+        """
+        # Calculer la matrice de covariance
+        cov_matrix = returns_df.cov()
+        
+        # Calculer les rendements moyens
+        mean_returns = returns_df.mean()
+        
+        # Fonction objective : maximiser le ratio de Sharpe
+        def objective(weights):
+            portfolio_return = np.sum(mean_returns * weights) * 252  # Annualisé
+            portfolio_volatility = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights))) * np.sqrt(252)
+            sharpe_ratio = (portfolio_return - risk_free_rate) / portfolio_volatility
+            return -sharpe_ratio  # On minimise le négatif pour maximiser le ratio
+        
+        # Contraintes
+        n_assets = len(returns_df.columns)
+        constraints = [
+            {'type': 'eq', 'fun': lambda x: np.sum(x) - 1},  # Somme des poids = 1
+            {'type': 'ineq', 'fun': lambda x: x}  # Poids >= 0
+        ]
+        bounds = tuple((0, max_weight) for _ in range(n_assets))  # Maximum max_weight par actif
+        
+        # Poids initiaux (égaux)
+        initial_weights = np.array([1/n_assets] * n_assets)
+        
+        # Optimisation
+        result = minimize(
+            objective,
+            initial_weights,
+            method='SLSQP',
+            bounds=bounds,
+            constraints=constraints
         )
+        
+        # Obtenir les poids optimaux
+        optimal_weights = result.x
+        
+        # Créer un dictionnaire des poids optimaux
+        target_weights = dict(zip(returns_df.columns, optimal_weights))
+        
+        return target_weights 
+
     
-    def save_deal(self, deal: Deal) -> None:
-        """Sauvegarde un deal dans les différentes tables."""
-        deal.save(self.db)
+    def _get_product_id(self, ticker: str) -> int:
+        """
+        Récupère l'ID d'un produit par son ticker.
+        
+        Args:
+            ticker: Symbole du produit
+            
+        Returns:
+            int: ID du produit
+        """
+        self.cursor.execute("""
+            SELECT id FROM Products WHERE ticker = ?
+        """, (ticker,))
+        result = self.cursor.fetchone()
+        return result[0] if result else None
     
-    def close(self) -> None:
-        """Ferme la connexion à la base de données."""
-        self.db.close() 
+    def _get_current_price(self, ticker: str, date: datetime) -> float:
+        """
+        Récupère le prix actuel d'un actif.
+        
+        Args:
+            ticker: Symbole de l'actif
+            date: Date d'analyse
+            
+        Returns:
+            float: Prix de l'actif
+        """
+        self.cursor.execute(f"""
+            SELECT price FROM Returns_{ticker}
+            WHERE date = ?
+        """, (date.strftime("%Y-%m-%d"),))
+        result = self.cursor.fetchone()
+        return result[0] if result else None
+
+    
+
+    def _save_deals_positions(self, deals: List[Dict[str, Any]], positions: List[Dict[str, Any]], cash: Dict[str, Any], date: datetime) -> None:
+        """
+        Enregistre les deals dans la base de données et met à jour les positions.
+        
+        Args:
+            deals: Liste des deals à enregistrer
+            positions: Liste des positions mises à jour
+            date: Date d'exécution des deals
+        """
+        # Créer et sauvegarder les deals
+        deal_objects = []
+        for deal in deals:
+            deal_obj = Deal(
+                portfolio_id=self.portfolio_id,
+                product_id=deal['product_id'],
+                date=date.strftime("%Y-%m-%d"),
+                action=deal['action'],
+                quantity=deal['quantity'],
+                price=deal['price']
+            )
+            deal_objects.append(deal_obj)
+        
+        Deal.save_multiple(deal_objects, self.db)
+        
+        # Mettre à jour les positions du portefeuille
+        self.portfolio_value=Portfolio.update_positions(self.db, self.portfolio_id, positions, cash)
+        print("new portfolio value", self.portfolio_value)
+        
+    
+

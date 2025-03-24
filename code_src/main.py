@@ -1,6 +1,10 @@
 import os
 import sqlite3
 from typing import Optional
+import random
+from datetime import datetime, timedelta
+import pandas as pd
+import numpy as np
 
 from data_collector import (
     generate_precise_client,
@@ -10,7 +14,8 @@ from data_collector import (
     create_portfolio,
     check_and_download_assets
 )
-from base_builder import Client, AssetManager, Portfolio, BaseModel
+from base_builder import Client, AssetManager, Portfolio, BaseModel, Product, get_eligible_managers, get_next_id
+from strategies import Simulation
 
 
 
@@ -85,6 +90,7 @@ def register_new_client() -> None:
             else:
                 print("✅ Portefeuille créé avec succès.")
                 
+                
                 # Création du client
                 client = Client(**client_data)
                 client_id = client.save(db)
@@ -94,7 +100,7 @@ def register_new_client() -> None:
                 portfolio = Portfolio(**portfolio_data)
                 portfolio.save(db)
                 
-                print(f"✅ {client_data['name']} est à présent un client de 'Data Management Project'.")
+                print(f"✅ {client_data['name']} est à présent un(e) client(e) de 'Data Management Project'.")
 
         db.close()
 
@@ -110,25 +116,152 @@ def main() -> None:
     
     Cette fonction gère le menu principal et le flux de contrôle du programme.
     """
-    print("🏦 Bienvenue dans le système de gestion de fonds d'investissement")
-    
     # Création de la base de données si elle n'existe pas
     BaseModel.create_database()
     
-    while True:
-        print("\n📋 Menu principal :")
-        print("1. Enregistrer un nouveau client")
-        print("2. Quitter")
+    print("\n=== Système de Gestion de Fonds d'Investissement ===")
+    print("1. Enregistrer un nouveau client")
+    print("2. Analyser les performances")
+    print("3. Quitter")
+    
+    choice = input("\nVotre choix : ")
+    
+    if choice == "1":
+        register_new_client()
+    elif choice == "2":
+        analyze_performance()
+    elif choice == "3":
+        print("\nAu revoir !")
+    else:
+        print("\nChoix invalide. Veuillez réessayer.")
+        main()
+
+
+def analyze_performance():
+    """Fonction pour analyser les performances."""
+    print("\n=== Analyse des Performances ===")
+    print("1. Analyser un client spécifique")
+    print("2. Analyser un manager spécifique")
+    print("3. Analyser le fonds globalement")
+    print("4. Retour au menu principal")
+    
+    choice = input("\nVotre choix : ")
+    
+    if choice == "1":
+        analyze_client_performance()
+    elif choice == "2":
+        analyze_manager_performance()
+    elif choice == "3":
+        analyze_fund_performance()
+    elif choice == "4":
+        main()
+    else:
+        print("\nChoix invalide. Veuillez réessayer.")
+        analyze_performance()
+
+
+def analyze_client_performance():
+    """Fonction pour analyser les performances d'un client spécifique."""
+    db = BaseModel.get_db_connection()
+    cursor = db.cursor()
+    
+    # Récupérer le dernier client inscrit
+    cursor.execute("""
+        SELECT c.id, c.name, c.registration_date, p.id as portfolio_id, p.strategy
+        FROM Clients c
+        LEFT JOIN Portfolios p ON c.id = p.client_id
+        ORDER BY c.registration_date DESC
+        LIMIT 1
+    """)
+    last_client = cursor.fetchone()
+    
+    print(f"\nDernier client inscrit : {last_client[1]} (inscrit le {last_client[2]})")
+    print("Voulez-vous analyser ce client ? (o/n)")
+    choice = input()
+    
+    if choice.lower() == 'o':
+        client_id = last_client[0]
+        portfolio_id = last_client[3]
+        strategy = last_client[4]
+        client_registration_date = last_client[2]
+    else:
+        print("Entrez l'ID du client à analyser :")
+        client_id = int(input())
         
-        choice = input("\n📌 Votre choix : ")
+        cursor.execute("""
+            SELECT c.registration_date, p.id, p.strategy
+            FROM Clients c
+            LEFT JOIN Portfolios p ON c.id = p.client_id
+            WHERE c.id = ?
+        """, (client_id,))
+        result = cursor.fetchone()
+        if not result:
+            print("Client non trouvé.")
+            return
         
-        if choice == "1":
-            register_new_client()
-        elif choice == "2":
-            print("👋 Au revoir !")
-            break
-        else:
-            print("❌ Choix invalide !")
+        client_registration_date = result[0]
+        portfolio_id = result[1]
+        strategy = result[2]
+    
+    # Récupérer le montant initial investi
+    cursor.execute("SELECT investment_amount FROM Clients WHERE id = ?", (client_id,))
+    initial_amount = cursor.fetchone()[0]
+    
+    print(f"\nAnalyse du portefeuille {portfolio_id} (Stratégie: {strategy})")
+    print(f"Début de l'analyse à partir du: {client_registration_date}")
+    print(f"Montant initial investi : {initial_amount:,.2f} €")
+    
+    # Créer une instance de Simulation
+    simulation = Simulation(db, portfolio_id, strategy, client_registration_date)
+    
+    # Simuler la gestion active du portefeuille
+    current_date = datetime.strptime(client_registration_date, '%Y-%m-%d')
+    #current_date = datetime(2024, 10, 1)
+    end_date = datetime(2024, 12, 31)
+    
+    while current_date <= end_date:
+        # Trouver le prochain vendredi
+        while current_date.weekday() != 4:  # 4 = vendredi
+            current_date += timedelta(days=1)
+        
+        # Exécuter la stratégie pour cette date
+        simulation.execute_strategy(current_date)
+        
+        # Passer à la semaine suivante
+        current_date += timedelta(days=7)
+    
+    
+
+    # Afficher le résumé final
+    print("\n=== Résumé de la gestion active ===")
+    print(f"Période : du {datetime.strptime(client_registration_date, '%Y-%m-%d').strftime('%Y-%m-%d')} au {end_date.strftime('%Y-%m-%d')}")
+    print(f"Nombre de semaines : {(end_date - datetime.strptime(client_registration_date, '%Y-%m-%d')).days // 7}")
+    
+    # Calculer la performance finale
+    final_positions, cash = simulation.get_portfolio_positions(portfolio_id, end_date)
+    if final_positions:
+        portfolio_value = sum(position['value'] for position in final_positions)+cash['value']
+        
+        # Calculer la performance
+        performance = (portfolio_value - initial_amount) / initial_amount * 100
+        
+        print("\n=== Performance du portefeuille ===")
+        print(f"Valeur initiale : {initial_amount:,.2f} €")
+        print(f"Valeur finale : {portfolio_value:,.2f} €")
+        print(f"Performance : {performance:+.2f}%")
+        print(f"Gain/Perte : {(portfolio_value - initial_amount):+,.2f} €")
+    
+    BaseModel.reinitialize_portfolio(db, portfolio_id)
+    db.close()
+
+#def analyze_fund_performance():
+#    """Fonction pour analyser les performances globales du fonds."""
+#        """Fonction pour analyser les performances d'un client spécifique."""
+
+
+
+
+
 
 
 if __name__ == "__main__":
