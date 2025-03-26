@@ -251,7 +251,7 @@ def get_corresponding_assets(sector):
     s = Screener()
 
     # Récupérer les actions les plus échangées
-    query_results = s.get_screeners(sector, 10)
+    query_results = s.get_screeners(sector, 20)
 
     tickers=[stock["symbol"] for stock in query_results[sector]["quotes"]]
 
@@ -269,7 +269,7 @@ def create_portfolio(manager, client_data, database):
     size = len(tickers) - len(missing_tickers)
     if missing_tickers:
         print(f"⚠️ {len(missing_tickers)} actifs n'ont pas pu être téléchargés.")
-        if size < 5:  # Minimum 1 actif requis
+        if size < 10:  # Minimum 5 actifs requis
             print("❌ Pas assez d'actifs disponibles pour créer le portefeuille.")
             return None
     

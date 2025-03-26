@@ -11,7 +11,8 @@ from data_collector import (
 )
 from base_builder import Client, AssetManager, Portfolio, BaseModel
 from strategies import Simulation
-
+from performances import analyze_portfolio_performance, get_portfolio_rankings
+import pandas as pd
 
 
 
@@ -112,19 +113,16 @@ def analyze_performance():
     """Fonction pour analyser les performances."""
     print("\n=== Analyse des Performances ===")
     print("1. Analyser un client spécifique")
-    #print("2. Analyser un manager spécifique")
-    #print("3. Analyser le fonds globalement")
-    print("4. Retour au menu principal")
+    print("2. Analyser le fonds globalement")
+    print("3. Retour au menu principal")
     
     choice = input("\nVotre choix : ")
     
     if choice == "1":
         analyze_client_performance()
-    #elif choice == "2":
-    #    analyze_manager_performance()
-    #elif choice == "3":
-        #analyze_fund_performance()
-    elif choice == "4":
+    elif choice == "2":
+        analyze_fund_performance()
+    elif choice == "3":
         main()
     else:
         print("\nChoix invalide. Veuillez réessayer.")
@@ -185,24 +183,53 @@ def analyze_client_performance():
     # Créer une instance de Simulation
     simulation = Simulation(db, portfolio_id, strategy, client_registration_date)
     
+     # DataFrame pour stocker les performances du portefeuille
+    portfolio_performance_df = pd.DataFrame(columns=["date", "cash", "portfolio_value"])
+    
+    # Variable pour stocker les tickers (produits uniques) rencontrés
+    all_tickers = set()
+
     # Simuler la gestion active du portefeuille
     current_date = datetime.strptime(client_registration_date, '%Y-%m-%d')
-    #current_date = datetime(2024, 10, 1)
     end_date = datetime(2024, 12, 31)
     
     while current_date <= end_date:
-        # Trouver le prochain vendredi
-        while current_date.weekday() != 4:  # 4 = vendredi
+        # Trouver le prochain lundi
+        while current_date.weekday() != 0:  # 0 = lundi
             current_date += timedelta(days=1)
         
-        # Exécuter la stratégie pour cette date
-        simulation.execute_strategy(current_date)
+        # Exécuter la stratégie pour ce lundi
+        positions, cash = simulation.execute_strategy(current_date)
+        
+        # Ajouter les tickers rencontrés à la liste
+        for position in positions:
+            all_tickers.add(position['ticker'])
+        
+        # Créer une ligne pour stocker la valeur de chaque produit et la valeur totale du portefeuille
+        row = {'date': current_date, 'cash': cash['value'], 'portfolio_value': sum(p['value'] for p in positions) + cash['value']}
+        
+        # Ajouter les valeurs des produits (tickers) dynamiquement dans le DataFrame
+        for ticker in all_tickers:
+            ticker_value = sum(p['value'] for p in positions if p['ticker'] == ticker)
+            row[ticker] = ticker_value
+        
+        # Ajouter la ligne au DataFrame
+        new_row = pd.DataFrame([row])
+        portfolio_performance_df = pd.concat([portfolio_performance_df, new_row], ignore_index=True)
         
         # Passer à la semaine suivante
         current_date += timedelta(days=7)
     
-    
+    print(portfolio_performance_df)
 
+    # Réorganiser le DataFrame pour avoir une colonne pour chaque produit et la valeur totale
+    portfolio_performance_df.set_index('date', inplace=True)
+    
+    # Afficher le DataFrame des performances
+    print("\n=== Performance du portefeuille ===")
+    print(portfolio_performance_df)
+    
+    
     # Afficher le résumé final
     print("\n=== Résumé de la gestion active ===")
     print(f"Période : du {datetime.strptime(client_registration_date, '%Y-%m-%d').strftime('%Y-%m-%d')} au {end_date.strftime('%Y-%m-%d')}")
@@ -211,7 +238,7 @@ def analyze_client_performance():
     # Calculer la performance finale
     final_positions, cash = simulation.get_portfolio_positions(portfolio_id, end_date)
     if final_positions:
-        portfolio_value = sum(position['value'] for position in final_positions)+cash['value']
+        portfolio_value = sum(position['value'] for position in final_positions) + cash['value']
         
         # Calculer la performance
         performance = (portfolio_value - initial_amount) / initial_amount * 100
@@ -221,12 +248,55 @@ def analyze_client_performance():
         print(f"Valeur finale : {portfolio_value:,.2f} €")
         print(f"Performance : {performance:+.2f}%")
         print(f"Gain/Perte : {(portfolio_value - initial_amount):+,.2f} €")
+
+    # Analyse des performances
+    analyze_portfolio_performance(portfolio_performance_df)
     
     BaseModel.reinitialize_portfolio(db, portfolio_id)
     db.close()
 
 
-
+def analyze_fund_performance():
+    """Fonction pour analyser les performances globales du fonds."""
+    db = BaseModel.get_db_connection()
+    cursor = db.cursor()
+    
+    # Récupérer la date d'inscription du premier client
+    cursor.execute("""
+        SELECT MIN(registration_date)
+        FROM Clients
+    """)
+    start_date = cursor.fetchone()[0]
+    
+    print(f"\nAnalyse des performances du fonds depuis le: {start_date}")
+    
+    # Obtenir les classements des portefeuilles et des managers
+    portfolio_rankings, manager_rankings = get_portfolio_rankings(db, start_date)
+    
+    # Afficher le classement des portefeuilles
+    print("\n=== Classement des Portefeuilles ===")
+    print(portfolio_rankings.to_string(index=False))
+    
+    # Afficher le classement des managers
+    print("\n=== Classement des Managers ===")
+    print(manager_rankings.to_string(index=False))
+    
+    # Calculer et afficher les statistiques globales
+    total_aum = portfolio_rankings['Final Value'].sum()
+    average_performance = portfolio_rankings['Performance (%)'].mean()
+    best_performance = portfolio_rankings['Performance (%)'].max()
+    worst_performance = portfolio_rankings['Performance (%)'].min()
+    
+    print("\n=== Statistiques Globales du Fonds ===")
+    print(f"Total AUM: {total_aum:,.2f} €")
+    print(f"Performance Moyenne: {average_performance:+.2f}%")
+    print(f"Meilleure Performance: {best_performance:+.2f}%")
+    print(f"Pire Performance: {worst_performance:+.2f}%")
+    
+    # Réinitialiser tous les portefeuilles
+    BaseModel.reinitialize_all_portfolios(db)
+    db.close()
+    
 def main() -> None:
     """
     Fonction principale du programme.

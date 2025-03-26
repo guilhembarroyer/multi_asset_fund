@@ -49,7 +49,6 @@ class Simulation:
         """, (0,0, 0, portfolio_id))
     
         
-        
 
         # Compteur de deals par mois
         self.deals_count = 0
@@ -77,19 +76,19 @@ class Simulation:
         # Récupérer les positions actuelles
         positions, cash = self.get_portfolio_positions(self.portfolio_id, current_date)
 
-        print("current_date", current_date)
+        #print("current_date", current_date)
         # Calculer les décisions d'investissement selon la stratégie
         deals,cash,positions = self._calculate_deals(positions, cash, current_returns)
-        print("deals", deals)
-        print("new positions", positions)
-        print("new cash", cash)
+        #print("deals", deals)
+        #print("new positions", positions)
+        #print("new cash", cash)
         # Enregistrer les deals dans la base de données
         if deals:
             self._save_deals_positions(deals, positions, cash, current_date)
             
 
-        print("deals count", self.deals_count)
-        return deals
+        #print("deals count", self.deals_count)
+        return positions, cash
     
     def get_asset_returns(self, date: datetime) -> pd.DataFrame:
         """Get returns for each asset as a DataFrame with the last 12 returns"""
@@ -193,7 +192,7 @@ class Simulation:
             'price': 1,
             'value': cash_value} 
         
-        print("positions in get_portfolio_positions", positions)
+        #print("positions in get_portfolio_positions", positions)
         print("total value in get_portfolio_positions", total_value+cash_value)
 
         return positions, cash
@@ -319,7 +318,7 @@ class Simulation:
                          
                         action = 'BUY' if weight_diff > 0 else 'SELL'
                         
-                        if (action == 'BUY' and quantity * position['price'] <= cash['value']) or (action == 'SELL' and quantity * position['price'] <= position['value']):
+                        if (action == 'BUY' and quantity * position['price'] <= cash['value']) or (action == 'SELL' and quantity * position['price'] >= position['value']):
                             self.deals_count += 1
                             deals.append({
                             'product_id': position['product_id'],
@@ -347,15 +346,21 @@ class Simulation:
                 target_weight = round(target_weights.get(position['ticker'], 0), 2)
                 print(position['ticker'], current_weight, target_weight)
                 
+                
+
                 # Calculer la quantité à acheter/vendre
                 weight_diff = target_weight - current_weight
+                print()
                 quantity = int((weight_diff) * self.portfolio_value / position['price'])
-            
+                
+                if position['ticker']=="UNH":
+                    print("UNH", current_weight, target_weight, quantity, position['price'], quantity * position['price'], position['value'])
+
                 if quantity !=0:
                         
                     action = 'BUY' if weight_diff > 0 else 'SELL'
                     
-                    if (action == 'BUY' and quantity * position['price'] <= cash['value']) or (action == 'SELL' and quantity * position['price'] <= position['value']):
+                    if (action == 'BUY' and quantity * position['price'] <= cash['value']) or (action == 'SELL' and quantity * position['price'] >= position['value']):
                         self.deals_count += 1
                         deals.append({
                         'product_id': position['product_id'],

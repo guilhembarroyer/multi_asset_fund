@@ -189,6 +189,30 @@ class BaseModel:
         
         db.commit()
 
+    @classmethod
+    def reinitialize_all_portfolios(cls, db: sqlite3.Connection) -> None:
+        """
+        Réinitialise tous les portefeuilles à leur valeur initiale.
+        
+        Args:
+            db: Connexion à la base de données
+        """
+        cursor = db.cursor()
+        
+        # Récupérer tous les IDs de portefeuilles
+        cursor.execute("SELECT id FROM Portfolios")
+        portfolio_ids = cursor.fetchall()
+        
+        # Réinitialiser chaque portefeuille
+        for portfolio_id in portfolio_ids:
+            try:
+                cls.reinitialize_portfolio(db, portfolio_id[0])
+            except ValueError as e:
+                print(f"⚠️ {str(e)}")
+                continue
+        
+        print("✅ Tous les portefeuilles ont été réinitialisés avec succès.")
+
 
 
 class Client(BaseModel):
