@@ -4,6 +4,64 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any
 
 
+### Fonctions utilitaires ###
+
+def get_next_id(table: str, db: sqlite3.Connection) -> int:
+    """
+    Récupère l'ID maximal de la table et retourne l'ID suivant.
+    
+    Args:
+        table: Nom de la table
+        db: Connexion à la base de données
+        
+    Returns:
+        int: Prochain ID disponible
+    """
+    cursor = db.cursor()
+    cursor.execute(f"SELECT MAX(id) FROM {table}")
+    max_id = cursor.fetchone()[0]
+    return 1 if max_id is None else max_id + 1
+
+
+
+def get_eligible_managers(db: sqlite3.Connection, client_country: str, client_seniority: str, client_strategie: str) -> List[Dict[str, Any]]:
+    """
+    Récupère les managers compatibles depuis la base de données selon les critères.
+    
+    Args:
+        db: Connexion à la base de données
+        client_country: Pays du client
+        client_seniority: Niveau de séniorité du client
+        client_strategie: Stratégie d'investissement du client
+        
+    Returns:
+        List[Dict[str, Any]]: Liste des managers éligibles
+    """
+    cursor = db.cursor()
+    cursor.execute("""
+        SELECT m.id, m.name, m.age, m.country, m.email, m.seniority, m.investment_sector
+        FROM Managers m
+        INNER JOIN Manager_Strategies ms ON m.id = ms.manager_id
+        WHERE m.country = ? AND m.seniority = ? AND ms.strategy LIKE ?
+    """, (client_country, client_seniority, f"%{client_strategie}%"))
+    
+    rows = cursor.fetchall()
+    eligible_managers = []
+    
+    for row in rows:
+        manager = {
+            'id': row[0],
+            'name': row[1],
+            'age': row[2],
+            'country': row[3],
+            'email': row[4],
+            'seniority': row[5],
+            'investment_sector': row[6]
+        }
+        eligible_managers.append(manager)
+    
+    return eligible_managers
+
 
 def get_db_path() -> str:
     """
@@ -17,6 +75,8 @@ def get_db_path() -> str:
     return os.path.join(parent_dir, "fund_database.db")
 
 
+
+### BASE MODELS ###
 class BaseModel:
     """Classe de base pour tous les modèles de données."""
     
@@ -263,32 +323,7 @@ class Client(BaseModel):
         db.commit()
         return client_id
 
-    @classmethod
-    def get_by_id(cls, client_id: int) -> Optional['Client']:
-        """
-        Récupère un client par son ID.
-        
-        Args:
-            client_id: ID du client à récupérer
-            
-        Returns:
-            Optional[Client]: Le client trouvé ou None si non trouvé
-        """
-        # with cls.get_db_connection() as db:
-        #     cursor = db.cursor()
-        #     cursor.execute("""
-        #         SELECT name, age, country, email, risk_profile, registration_date,
-        #                investment_amount, manager_id, portfolio_id
-        #         FROM Clients
-        #         WHERE id = ?
-        #     """, (client_id,))
-            
-        #     row = cursor.fetchone()
-        #     if row:
-        #         return cls(*row)
-        #     return None
-        pass
-
+ 
 
 class AssetManager(BaseModel):
     """Classe représentant un gestionnaire d'actifs."""
@@ -331,38 +366,6 @@ class AssetManager(BaseModel):
         db.commit()
         return manager_id
 
-    @classmethod
-    def get_by_id(cls, manager_id: int) -> Optional['AssetManager']:
-        """
-        Récupère un gestionnaire par son ID.
-        
-        Args:
-            manager_id: ID du gestionnaire à récupérer
-            
-        Returns:
-            Optional[AssetManager]: Le gestionnaire trouvé ou None si non trouvé
-        """
-        # with cls.get_db_connection() as db:
-        #     cursor = db.cursor()
-        #     cursor.execute("""
-        #         SELECT m.name, m.age, m.country, m.email, m.seniority, m.investment_sector
-        #         FROM Managers m
-        #         WHERE m.id = ?
-        #     """, (manager_id,))
-            
-        #     row = cursor.fetchone()
-        #     if row:
-        #         # Récupération des stratégies
-        #         cursor.execute("""
-        #             SELECT strategy
-        #             FROM manager_portfolios
-        #             WHERE manager_id = ?
-        #         """, (manager_id,))
-        #         strategies = [row[0] for row in cursor.fetchall()]
-                
-        #         return cls(*row, strategies=strategies)
-        #     return None
-        pass
 
 
 class Portfolio(BaseModel):
@@ -445,41 +448,7 @@ class Portfolio(BaseModel):
         
         
 
-    @classmethod
-    def get_by_id(cls, portfolio_id: int) -> Optional['Portfolio']:
-        """
-        Récupère un portefeuille par son ID.
-        
-        Args:
-            portfolio_id: ID du portefeuille à récupérer
-            
-        Returns:
-            Optional[Portfolio]: Le portefeuille trouvé ou None si non trouvé
-        """
-        # with cls.get_db_connection() as db:
-        #     cursor = db.cursor()
-        #     cursor.execute("""
-        #         SELECT p.manager_id, p.client_id, p.strategy, p.investment_sector,
-        #                p.size, p.value
-        #         FROM Portfolios p
-        #         WHERE p.id = ?
-        #     """, (portfolio_id,))
-            
-        #     row = cursor.fetchone()
-        #     if row:
-        #         # Récupération des actifs
-        #         cursor.execute("""
-        #             SELECT pr.ticker
-        #             FROM portfolios_products pp
-        #             JOIN Products pr ON pp.product_id = pr.id
-        #             WHERE pp.portfolio_id = ?
-        #         """, (portfolio_id,))
-        #         assets = [row[0] for row in cursor.fetchall()]
-                
-        #         return cls(*row, assets=assets)
-        #     return None
-        pass
-
+ 
 
 class Product(BaseModel):
     """Classe représentant un produit financier."""
@@ -565,102 +534,9 @@ class Product(BaseModel):
             cursor.execute("SELECT 1 FROM Products WHERE ticker = ?", (ticker,))
             return cursor.fetchone() is not None
 
-    @classmethod
-    def get_by_ticker(cls, ticker: str) -> Optional['Product']:
-        """
-        Récupère un produit par son symbole.
-        
-        Args:
-            ticker: Symbole du produit à récupérer
-            
-        Returns:
-            Optional[Product]: Le produit trouvé ou None si non trouvé
-        """
-        #with cls.get_db_connection() as db:
-        #    cursor = db.cursor()
-        #    cursor.execute("""
-        #        SELECT p.ticker, p.sector
-        #        FROM Products p
-        #        WHERE p.ticker = ?
-        #    """, (ticker,))
-            
-        #    row = cursor.fetchone()
-        #    if row:
-        #        # Récupération des rendements
-        #        cursor.execute("""
-        #            SELECT date, return_value
-        #            FROM Returns
-        #            WHERE ticker = ?
-        #        """, (ticker,))
-        #        returns = {row[0]: row[1] for row in cursor.fetchall()}
-                
-        #        return cls(*row, returns=returns)
-        #    return None
-        pass
-
-    
-    
 
 
-### Fonctions utilitaires ###
-
-def get_next_id(table: str, db: sqlite3.Connection) -> int:
-    """
-    Récupère l'ID maximal de la table et retourne l'ID suivant.
-    
-    Args:
-        table: Nom de la table
-        db: Connexion à la base de données
-        
-    Returns:
-        int: Prochain ID disponible
-    """
-    cursor = db.cursor()
-    cursor.execute(f"SELECT MAX(id) FROM {table}")
-    max_id = cursor.fetchone()[0]
-    return 1 if max_id is None else max_id + 1
-
-
-
-def get_eligible_managers(db: sqlite3.Connection, client_country: str, client_seniority: str, client_strategie: str) -> List[Dict[str, Any]]:
-    """
-    Récupère les managers compatibles depuis la base de données selon les critères.
-    
-    Args:
-        db: Connexion à la base de données
-        client_country: Pays du client
-        client_seniority: Niveau de séniorité du client
-        client_strategie: Stratégie d'investissement du client
-        
-    Returns:
-        List[Dict[str, Any]]: Liste des managers éligibles
-    """
-    cursor = db.cursor()
-    cursor.execute("""
-        SELECT m.id, m.name, m.age, m.country, m.email, m.seniority, m.investment_sector
-        FROM Managers m
-        INNER JOIN Manager_Strategies ms ON m.id = ms.manager_id
-        WHERE m.country = ? AND m.seniority = ? AND ms.strategy LIKE ?
-    """, (client_country, client_seniority, f"%{client_strategie}%"))
-    
-    rows = cursor.fetchall()
-    eligible_managers = []
-    
-    for row in rows:
-        manager = {
-            'id': row[0],
-            'name': row[1],
-            'age': row[2],
-            'country': row[3],
-            'email': row[4],
-            'seniority': row[5],
-            'investment_sector': row[6]
-        }
-        eligible_managers.append(manager)
-    
-    return eligible_managers
-
-
+### DEALS ###
 class Deal(BaseModel):
     """Classe représentant une transaction sur un portefeuille."""
     
@@ -778,4 +654,5 @@ class Deal(BaseModel):
             })
         
         return deals
+
 

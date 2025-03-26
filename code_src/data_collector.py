@@ -19,8 +19,7 @@ from typing import List, Optional
 
 
 
-
-###RANDOM INFOS GENERATOR
+###RANDOM CLIENT GENERATOR
 
 def generate_email(name):
     """Génère un email basé sur le nom du client."""
@@ -37,8 +36,6 @@ def get_random_country():
         if country:  # Vérifie que le pays est valide
            return country_name
 
-###RANDOM CLIENT GENERATOR
-
 def generate_valid_registration_date():
     """Génère une date d'enregistrement entre le 01-01-2022 et le 31-12-2022 au format YYYY-MM-DD."""
     start_date = datetime(2022, 1, 1)
@@ -50,7 +47,6 @@ def generate_valid_registration_date():
     
     # Retourner la date au format YYYY-MM-DD
     return random_date.strftime("%Y-%m-%d")
-
 
 def generate_random_client(database):
     """Génère un client aléatoire avec des données valides."""

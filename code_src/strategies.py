@@ -76,12 +76,10 @@ class Simulation:
         # Récupérer les positions actuelles
         positions, cash = self.get_portfolio_positions(self.portfolio_id, current_date)
 
-        #print("current_date", current_date)
+
         # Calculer les décisions d'investissement selon la stratégie
         deals,cash,positions = self._calculate_deals(positions, cash, current_returns)
-        #print("deals", deals)
-        #print("new positions", positions)
-        #print("new cash", cash)
+
         # Enregistrer les deals dans la base de données
         if deals:
             self._save_deals_positions(deals, positions, cash, current_date)
@@ -183,8 +181,6 @@ class Simulation:
                 WHERE id = ?
             """, (self.portfolio_id,))
         cash_value = cursor.fetchone()[0]
-            
-        print("cash value in get_portfolio_positions", cash_value)
         
         cash = {
             'ticker': 'CASH',
@@ -192,8 +188,6 @@ class Simulation:
             'price': 1,
             'value': cash_value} 
         
-        #print("positions in get_portfolio_positions", positions)
-        print("total value in get_portfolio_positions", total_value+cash_value)
 
         return positions, cash
 
@@ -222,11 +216,10 @@ class Simulation:
             
             current_volatility = portfolio_returns.std() * np.sqrt(252)  # Volatilité annualisée
             
-            print("current volatility", current_volatility)
             
             # Si la volatilité est supérieure à 10%, réduire les positions risquées
             if current_volatility > 0.10:
-                print("current volatility is greater than 10%")
+
                 # Trier les actifs par volatilité décroissante
                 asset_volatilities = current_returns.std() * np.sqrt(252)
                 risky_assets = asset_volatilities[asset_volatilities > 0.10].index
@@ -256,7 +249,7 @@ class Simulation:
             
             # Si la volatilité est inférieure à 10%, augmenter les positions des actifs moins risqués
             elif current_volatility < 0.10:
-                print("current volatility is less than 10%")
+
                 # Obtenir les poids optimaux
                 target_weights = self.optimize(current_returns)
                 
@@ -267,7 +260,7 @@ class Simulation:
                     target_weight = round(target_weights.get(position['ticker'], 0), 2)
                     weight_diff = target_weight - current_weight
 
-                    print(position['ticker'], current_weight, target_weight)
+
                 
                     quantity = int((weight_diff) * self.portfolio_value / position['price'])
 
@@ -293,10 +286,8 @@ class Simulation:
                     
         elif self.strategy == "Medium Risk": #Low Turnover
             # Vérifier le nombre de deals du mois
-            print("deals count", self.deals_count)
-
             if self.deals_count >= 2:  # Maximum 2 deals par mois
-                print("no deals")
+
                 return [], cash, positions
             
             else:
@@ -308,7 +299,7 @@ class Simulation:
                 for position in positions:
                     current_weight = position['weight']
                     target_weight = round(target_weights.get(position['ticker'], 0), 2)
-                    print(position['ticker'], current_weight, target_weight)
+
                     
                     # Calculer la quantité à acheter/vendre
                     weight_diff = target_weight - current_weight
@@ -344,18 +335,15 @@ class Simulation:
             for position in positions:
                 current_weight = position['weight']
                 target_weight = round(target_weights.get(position['ticker'], 0), 2)
-                print(position['ticker'], current_weight, target_weight)
-                
+
                 
 
                 # Calculer la quantité à acheter/vendre
                 weight_diff = target_weight - current_weight
-                print()
+
                 quantity = int((weight_diff) * self.portfolio_value / position['price'])
                 
-                if position['ticker']=="UNH":
-                    print("UNH", current_weight, target_weight, quantity, position['price'], quantity * position['price'], position['value'])
-
+    
                 if quantity !=0:
                         
                     action = 'BUY' if weight_diff > 0 else 'SELL'

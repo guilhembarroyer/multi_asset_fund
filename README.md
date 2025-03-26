@@ -1,93 +1,100 @@
-# Multi-Asset Fund Management System
+# Système de Gestion de Fonds d'Investissement
 
-## Description
-Ce projet est un système de gestion de fonds multi-actifs qui permet de simuler et d'analyser différentes stratégies d'investissement. Le système utilise une base de données SQLite pour stocker les données des clients, des portefeuilles et des transactions.
-
-## Fonctionnalités
-- Gestion des clients et des portefeuilles
-- Trois stratégies d'investissement :
-  - Low Risk : Volatilité cible de 10%
-  - Medium Risk : Optimisation du ratio de Sharpe avec faible turnover
-  - High Risk : Optimisation du ratio de Sharpe avec concentration
-- Simulation de performance historique
-- Analyse des rendements et de la volatilité
-- Gestion des transactions et des positions
+Ce projet est un système de gestion de fonds d'investissement qui permet de gérer des clients, des portefeuilles et des managers, avec des fonctionnalités d'analyse de performance.
 
 ## Structure du Projet
+
 ```
 multi_asset_fund/
 ├── code_src/
 │   ├── main.py           # Point d'entrée du programme
 │   ├── base_builder.py   # Classes de base et gestion de la base de données
-│   ├── strategies.py     # Implémentation des stratégies d'investissement
-│   └── portfolio_builder.py  # Gestion des portefeuilles
-├── data/
-│   └── database.db       # Base de données SQLite
-└── requirements.txt      # Dépendances du projet
+│   ├── data_collector.py # Génération de données et création d'entités
+│   ├── strategies.py     # Stratégies d'investissement
+│   └── performances.py   # Analyse des performances
+├── fund_database.db      # Base de données SQLite
+└── README.md            # Documentation du projet
 ```
 
+## Fonctionnalités
+
+### 1. Gestion des Clients
+- Création de clients (aléatoire ou manuel)
+- Attribution automatique de managers
+- Création de portefeuilles personnalisés
+
+### 2. Gestion des Managers
+- Attribution automatique basée sur le profil du client
+- Gestion des stratégies d'investissement
+- Suivi des performances
+
+### 3. Analyse des Performances
+- Analyse individuelle des portefeuilles
+- Analyse globale du fonds
+- Visualisations interactives
+- Classements des portefeuilles et managers
+
 ## Installation
-1. Cloner le repository :
+
+1. Clonez le repository :
 ```bash
 git clone [URL_DU_REPO]
 cd multi_asset_fund
 ```
 
-2. Installer les dépendances :
+2. Installez les dépendances :
 ```bash
 pip install -r requirements.txt
 ```
 
 ## Utilisation
-1. Lancer le programme :
+
+### Version Console
 ```bash
 python code_src/main.py
 ```
 
-2. Suivre les instructions du menu interactif pour :
-   - Enregistrer un nouveau client
-   - Analyser la performance d'un client
-   - Analyser la performance d'un manager
-   - Quitter le programme
-
-## Stratégies d'Investissement
-
-### Low Risk
-- Volatilité cible : 10% annualisée
-- Ajustement dynamique des positions pour maintenir la volatilité cible
-- Privilégie les actifs moins risqués
-
-### Medium Risk
-- Optimisation du ratio de Sharpe
-- Limite de 2 transactions par mois
-- Gestion prudente du turnover
-
-### High Risk
-- Optimisation du ratio de Sharpe avec concentration
-- Poids maximum de 20% par actif
-- Stratégie plus agressive
-
-## Base de Données
-Le système utilise une base de données SQLite avec les tables suivantes :
-- Clients : Informations sur les clients
-- Managers : Informations sur les gestionnaires
-- Portfolios : Détails des portefeuilles
-- Products : Informations sur les actifs
-- Portfolios_Products : Positions dans les portefeuilles
-- Deals : Historique des transactions
-
-## Développement
-Pour contribuer au projet :
-1. Créer une branche pour votre fonctionnalité
-2. Implémenter les modifications
-3. Tester le code
-4. Soumettre une pull request
-
-## Tests
-Pour exécuter les tests :
+### Version Interactive (Jupyter Notebook)
 ```bash
-python -m pytest tests/
+jupyter notebook code_src/main.ipynb
 ```
 
+## Structure de la Base de Données
+
+### Tables Principales
+- `Clients` : Informations sur les clients
+- `Managers` : Informations sur les managers
+- `Portfolios` : Portefeuilles des clients
+- `Products` : Produits financiers disponibles
+- `Deals` : Historique des transactions
+
+### Relations
+- Client -> Manager (1:1)
+- Client -> Portfolio (1:1)
+- Manager -> Portfolio (1:N)
+- Portfolio -> Products (N:N)
+
+## Fonctionnalités Techniques
+
+### Gestion des Risques
+- Stratégies d'investissement adaptées au profil de risque
+- Suivi de la volatilité des portefeuilles
+- Rééquilibrage automatique
+
+### Analyse des Performances
+- Calcul des rendements
+- Analyse de la répartition des actifs
+- Visualisations statistiques
+
+## Contribution
+
+Les contributions sont les bienvenues ! N'hésitez pas à :
+1. Fork le projet
+2. Créer une branche pour votre fonctionnalité
+3. Commiter vos changements
+4. Pousser vers la branche
+5. Ouvrir une Pull Request
+
 ## Licence
-[Votre Licence]
+
+Ce projet est sous licence MIT. Voir le fichier `LICENSE` pour plus de détails.
