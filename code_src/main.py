@@ -220,7 +220,7 @@ def analyze_client_performance():
         # Passer à la semaine suivante
         current_date += timedelta(days=7)
     
-    print(portfolio_performance_df)
+
 
     # Réorganiser le DataFrame pour avoir une colonne pour chaque produit et la valeur totale
     portfolio_performance_df.set_index('date', inplace=True)

@@ -30,7 +30,7 @@ def generate_email(name):
 def get_random_country():
     """Génère un pays valide et une ville réelle appartenant à ce pays."""
     while True:
-        country_name = fake.country()
+        country_name = "France" #fake.country()
         country = pycountry.countries.get(name=country_name)
         
         if country:  # Vérifie que le pays est valide

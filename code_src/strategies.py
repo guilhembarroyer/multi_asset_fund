@@ -269,7 +269,6 @@ class Simulation:
                         action = 'BUY' if weight_diff > 0 else 'SELL'
                         
                         if (action == 'BUY' and quantity * position['price'] <= cash['value']) or (action == 'SELL' and quantity * position['price'] <= position['value']):
-                            print("deal", action, quantity, position['price'])
             
                             self.deals_count += 1
                             deals.append({
@@ -483,7 +482,7 @@ class Simulation:
         
         # Mettre à jour les positions du portefeuille
         self.portfolio_value=Portfolio.update_positions(self.db, self.portfolio_id, positions, cash)
-        print("new portfolio value", self.portfolio_value)
+
         
     
 
