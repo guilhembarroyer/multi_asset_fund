@@ -54,11 +54,6 @@ pip install -r requirements.txt
 python code_src/main.py
 ```
 
-### Version Interactive (Jupyter Notebook)
-```bash
-jupyter notebook code_src/main.ipynb
-```
-
 ## Structure de la Base de Données
 
 ### Tables Principales
