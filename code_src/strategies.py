@@ -85,7 +85,6 @@ class Simulation:
             self._save_deals_positions(deals, positions, cash, current_date)
             
 
-        #print("deals count", self.deals_count)
         return positions, cash
     
     def get_asset_returns(self, date: datetime) -> pd.DataFrame:
@@ -230,7 +229,7 @@ class Simulation:
                         # Calculer la réduction nécessaire
                         target_weight = round(position['weight'] * (0.10 / current_volatility), 2)
                         weight_diff = target_weight - position['weight']
-                        print(position['ticker'], position['weight'], target_weight)
+                        
                         
                     quantity = int(weight_diff * self.portfolio_value / position['price'])
                     if quantity < 0:
